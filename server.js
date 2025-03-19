@@ -11,10 +11,13 @@ if (process.env.NODE_ENV !== 'production') {
   
   const app = express();
   
-  // Configuración de CORS basada en entorno
+  // Configuración de CORS actualizada para permitir múltiples orígenes
   const corsOptions = {
     origin: process.env.NODE_ENV === 'production' 
-      ? [process.env.CLIENT_URL || 'https://juego-memoria-cliente.onrender.com'] 
+      ? [
+          process.env.CLIENT_URL || 'https://juego-memoria-cliente.onrender.com',
+          'https://juego-memoria-cliente-ug3h.onrender.com' // Añadido el nuevo dominio
+        ] 
       : ['http://localhost:3000'],
     methods: ['GET', 'POST'],
     credentials: true
@@ -734,6 +737,15 @@ if (process.env.NODE_ENV !== 'production') {
               }
           }
       });
+  });
+  
+  // Endpoint para verificar la configuración de CORS (para depuración)
+  app.get('/cors-config', (req, res) => {
+    res.json({
+      corsOrigins: Array.isArray(corsOptions.origin) ? corsOptions.origin : [corsOptions.origin],
+      environment: process.env.NODE_ENV,
+      clientUrl: process.env.CLIENT_URL
+    });
   });
   
   // Logs de inicio
