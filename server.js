@@ -137,7 +137,8 @@ function saveGameState() {
         players: gameState.players.map(player => ({
             id: player.id,
             username: player.username,
-            socketId: player.socketId
+            socketId: player.socketId,
+            isConnected: player.isConnected
         })),
         currentPlayerIndex: gameState.currentPlayerIndex,
         status: gameState.status,
@@ -223,6 +224,14 @@ function loadGameState() {
                         }
                     }
                 }
+            }
+            
+            // Restaurar jugadores si existen en el estado guardado
+            if (savedState.players) {
+                gameState.players = savedState.players.map(player => ({
+                    ...player,
+                    isConnected: false // Inicialmente marcar todos como desconectados
+                }));
             }
             
             console.log(`Estado del juego cargado correctamente. Mesa global actual: ${globalTableNumber}`);
@@ -374,7 +383,7 @@ function resetBoardOnly() {
         
         // Enviar actualización del contador de mesas
         const playerSocketId = player.socketId;
-        if (playerSocketId) {
+        if (playerSocketId && player.isConnected) {
             io.to(playerSocketId).emit('tablesUpdate', {
                 tablesPlayed: playerTableCount[playerId],
                 currentTable: globalTableNumber,
@@ -400,7 +409,8 @@ function resetBoardOnly() {
         players: gameState.players.map(player => ({
             id: player.id,
             username: player.username,
-            isBlocked: getUserById(player.id).isBlocked
+            isBlocked: getUserById(player.id).isBlocked,
+            isConnected: player.isConnected
         })),
         status: 'playing',
         rowSelections: gameState.rowSelections
@@ -442,7 +452,8 @@ function resetGame() {
         players: gameState.players.map(player => ({
             id: player.id,
             username: player.username,
-            isBlocked: getUserById(player.id).isBlocked
+            isBlocked: getUserById(player.id).isBlocked,
+            isConnected: player.isConnected
         })),
         status: 'playing',
         turnStartTime: gameState.turnStartTime,
@@ -475,47 +486,60 @@ function startPlayerTurn() {
         gameState.currentPlayerIndex = 0;
         gameState.currentPlayer = gameState.players[0];
 
-        // Temporizador para un solo jugador
-        clearTimeout(turnTimer);
-        turnTimer = setTimeout(() => {
-            console.log(`Tiempo agotado para ${gameState.currentPlayer.username}`);
-            io.emit('turnTimeout', { playerId: gameState.currentPlayer.id });
-            // Reiniciar el turno del mismo jugador
+        // Solo establecer temporizador si está conectado
+        if (gameState.currentPlayer.isConnected) {
+            clearTimeout(turnTimer);
+            turnTimer = setTimeout(() => {
+                console.log(`Tiempo agotado para ${gameState.currentPlayer.username}`);
+                io.emit('turnTimeout', { playerId: gameState.currentPlayer.id });
+                setTimeout(() => {
+                    startPlayerTurn();
+                }, 500);
+            }, 4000);
+        } else {
+            // Si el único jugador está desconectado, reiniciar su turno brevemente
             setTimeout(() => {
                 startPlayerTurn();
-            }, 500);
-        }, 4000);
+            }, 1000);
+        }
     } else {
-        // Lógica para múltiples jugadores
-        gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % gameState.players.length;
-        let nextPlayerIndex = gameState.currentPlayerIndex;
-
-        // Buscar el siguiente jugador no bloqueado
+        // Lógica para múltiples jugadores, necesitamos encontrar el siguiente jugador conectado
+        let nextPlayerFound = false;
         let loopCount = 0;
-        while (
-            loopCount < gameState.players.length &&
-            getUserById(gameState.players[nextPlayerIndex].id).isBlocked
-        ) {
-            nextPlayerIndex = (nextPlayerIndex + 1) % gameState.players.length;
-            loopCount++;
-            if (loopCount >= gameState.players.length) {
-                console.log("Todos los jugadores están bloqueados");
-                return; // Evita un bucle infinito
+        
+        // Comenzar desde el siguiente jugador
+        gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % gameState.players.length;
+        
+        // Buscar al siguiente jugador conectado y no bloqueado
+        while (!nextPlayerFound && loopCount < gameState.players.length) {
+            const nextPlayer = gameState.players[gameState.currentPlayerIndex];
+            const nextUserData = getUserById(nextPlayer.id);
+            
+            // Si el jugador está conectado y no bloqueado, es su turno
+            if (nextPlayer.isConnected && nextUserData && !nextUserData.isBlocked) {
+                nextPlayerFound = true;
+            } else {
+                // Si no, pasar al siguiente
+                gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % gameState.players.length;
+                loopCount++;
             }
         }
-
-        // Asignar el nuevo jugador actual
-        gameState.currentPlayerIndex = nextPlayerIndex;
+        
+        // Si hemos recorrido todos los jugadores y ninguno está disponible
+        if (!nextPlayerFound) {
+            console.log("No hay jugadores conectados y no bloqueados disponibles");
+            return;
+        }
+        
+        // Establecer el jugador actual
         gameState.currentPlayer = gameState.players[gameState.currentPlayerIndex];
-
         console.log(`Turno de ${gameState.currentPlayer.username}, tiene 4 segundos`);
-
+        
         // Establecer temporizador
         clearTimeout(turnTimer);
         turnTimer = setTimeout(() => {
             console.log(`Tiempo agotado para ${gameState.currentPlayer.username}`);
             io.emit('turnTimeout', { playerId: gameState.currentPlayer.id });
-            // Pequeña pausa antes de pasar al siguiente jugador
             setTimeout(() => {
                 startPlayerTurn();
             }, 500);
@@ -543,7 +567,7 @@ function startPlayerTurn() {
             id: player.id,
             username: player.username,
             isBlocked: getUserById(player.id).isBlocked,
-            isActive: true
+            isConnected: player.isConnected
         })),
         status: 'playing',
         turnStartTime: gameState.turnStartTime,
@@ -574,6 +598,19 @@ io.on('connection', (socket) => {
         const playerIndex = gameState.players.findIndex(player => player.id === userId);
         if (playerIndex !== -1) {
             gameState.players[playerIndex].socketId = socket.id;
+            
+            // Marcar al jugador como conectado
+            const wasConnected = gameState.players[playerIndex].isConnected;
+            gameState.players[playerIndex].isConnected = true;
+            
+            // Notificar a otros jugadores sobre la reconexión
+            if (!wasConnected) {
+                io.emit('playerConnectionChanged', {
+                    playerId: userId,
+                    isConnected: true,
+                    username
+                });
+            }
         }
     });
 
@@ -602,7 +639,7 @@ io.on('connection', (socket) => {
                     id: player.id,
                     username: player.username,
                     isBlocked: getUserById(player.id).isBlocked,
-                    isActive: true
+                    isConnected: player.isConnected
                 })),
                 status: 'playing',
                 rowSelections: playerGameState[userId].rowSelections
@@ -619,7 +656,7 @@ io.on('connection', (socket) => {
                     id: player.id,
                     username: player.username,
                     isBlocked: getUserById(player.id).isBlocked,
-                    isActive: true
+                    isConnected: player.isConnected
                 })),
                 status: 'playing',
                 rowSelections: gameState.playerSelections[userId]?.rowSelections || [0, 0, 0, 0]
@@ -715,11 +752,15 @@ io.on('connection', (socket) => {
         initPlayerSelections(userId);
 
         // Verificar si el jugador ya está en el juego
-        if (!gameState.players.some(player => player.id === userId)) {
+        const existingPlayerIndex = gameState.players.findIndex(player => player.id === userId);
+        
+        if (existingPlayerIndex === -1) {
+            // El jugador no está en el juego, añadirlo
             gameState.players.push({
                 id: userId,
                 username: user.username,
-                socketId: socket.id
+                socketId: socket.id,
+                isConnected: true // Añadir esta propiedad
             });
 
             console.log(`Usuario ${user.username} añadido al juego`);
@@ -756,14 +797,339 @@ io.on('connection', (socket) => {
                     id: player.id,
                     username: player.username,
                     isBlocked: getUserById(player.id).isBlocked,
-                    isActive: true
+                    isConnected: player.isConnected
                 })),
                 status: 'playing',  // Forzar estado 'playing' explícitamente aquí también
                 rowSelections: gameState.rowSelections
             });
 
-           // Anunciar a todos los demás clientes
-           socket.broadcast.emit('gameState', {
+            // Anunciar a todos los demás clientes
+            socket.broadcast.emit('gameState', {
+                board: gameState.board.map(tile => ({
+                    ...tile,
+                    value: tile.revealed ? tile.value : null
+                })),
+                currentPlayer: gameState.currentPlayer,
+                players: gameState.players.map(player => ({
+                    id: player.id,
+                    username: player.username,
+                    isBlocked: getUserById(player.id).isBlocked,
+                    isConnected: player.isConnected
+                })),
+                status: 'playing',
+                rowSelections: gameState.rowSelections
+            });
+            
+            // Guardar estado
+            saveGameState();
+        } else {
+            // El jugador ya está en el juego, actualizar su estado de conexión
+            gameState.players[existingPlayerIndex].socketId = socket.id;
+            
+            // Marcar al jugador como conectado
+            const wasConnected = gameState.players[existingPlayerIndex].isConnected;
+            gameState.players[existingPlayerIndex].isConnected = true;
+            
+            // Notificar a otros jugadores sobre la reconexión
+            if (!wasConnected) {
+                io.emit('playerConnectionChanged', {
+                    playerId: userId,
+                    isConnected: true,
+                    username: user.username
+                });
+                console.log(`Usuario ${user.username} reconectado al juego`);
+            }
+
+            // Asegurarse de que el juego esté en estado 'playing' y haya un jugador actual
+            if (gameState.status !== 'playing') {
+                gameState.status = 'playing';
+                startPlayerTurn(); // Reiniciar el turno si el juego estaba en espera
+            }
+
+            if (!gameState.currentPlayer && gameState.players.length > 0) {
+                gameState.currentPlayer = gameState.players[0];
+                gameState.currentPlayerIndex = 0;
+                startPlayerTurn(); // Asegurar que haya un turno activo
+            }
+
+            // Enviar estado actual al jugador reconectado
+            socket.emit('gameState', {
+                board: gameState.board.map(tile => ({
+                    ...tile,
+                    value: tile.revealed ? tile.value : null
+                })),
+                currentPlayer: gameState.currentPlayer,
+                players: gameState.players.map(player => ({
+                    id: player.id,
+                    username: player.username,
+                    isBlocked: getUserById(player.id).isBlocked,
+                    isConnected: player.isConnected
+                })),
+                status: 'playing',  // Forzar estado 'playing' explícitamente aquí también
+                rowSelections: gameState.playerSelections[userId]?.rowSelections || [0, 0, 0, 0]
+            });
+        }
+    });
+
+    // Seleccionar una ficha
+    socket.on('selectTile', ({ tileIndex }) => {
+        console.log(`Recibido evento selectTile para ficha ${tileIndex} de socket ${socket.id}`);
+        
+        socket.emit('tileSelectResponse', { received: true, tileIndex });
+        
+        const userId = connectedSockets[socket.id];
+        if (!userId) {
+            console.log('Usuario no autenticado, evento ignorado');
+            return;
+        }
+        
+        const user = getUserById(userId);
+        if (!user) {
+            console.log('Usuario no encontrado, evento ignorado');
+            return;
+        }
+        
+        if (user.isBlocked) {
+            console.log('Usuario bloqueado, evento ignorado');
+            return;
+        }
+        
+        // Verificar límite de mesas
+        if (checkTableLimit(userId)) {
+            console.log(`Usuario ${user.username} ha alcanzado el límite diario de mesas`);
+            socket.emit('tableLimitReached', {
+                message: 'Has alcanzado el límite diario de mesas.',
+                unlockTime: `${UNLOCK_HOUR}:00 AM`
+            });
+            return;
+        }
+        
+        // Permitir seleccionar si es el único jugador o si es su turno
+        if (gameState.players.length > 1 && gameState.currentPlayer.id !== userId) {
+            console.log(`No es el turno de ${user.username}, es el turno de ${gameState.currentPlayer.username}`);
+            return;
+        }
+        
+        // Verificar si el tiempo se agotó
+        const tiempoTranscurrido = Date.now() - gameState.turnStartTime;
+        if (tiempoTranscurrido > 4000) {
+            console.log(`Tiempo agotado para ${user.username}, han pasado ${tiempoTranscurrido}ms`);
+            socket.emit('message', 'Tiempo agotado para este turno');
+            return;
+        }
+        
+        if (tileIndex < 0 || tileIndex >= gameState.board.length) {
+            console.log(`Índice de ficha ${tileIndex} fuera de rango`);
+            return;
+        }
+        
+        if (gameState.board[tileIndex].revealed) {
+            console.log(`Ficha ${tileIndex} ya revelada`);
+            return;
+        }
+        
+        // Obtener o inicializar selecciones del jugador
+        const playerSelections = initPlayerSelections(userId);
+        
+        // Determinar a qué hilera pertenece esta ficha (4 fichas por hilera en un tablero 4x4)
+        const row = Math.floor(tileIndex / 4);
+        
+        // Verificar si ya se seleccionaron 2 fichas de esta hilera
+        if (playerSelections.rowSelections[row] >= 2) {
+            console.log(`Jugador ${user.username} ya seleccionó 2 fichas de la hilera ${row + 1}`);
+            socket.emit('message', `Ya has seleccionado 2 fichas de la hilera ${row + 1}`);
+            return;
+        }
+        
+        console.log(`Jugador ${user.username} seleccionó ficha ${tileIndex} de la hilera ${row + 1}`);
+        
+        // Incrementar contador para esta hilera específica del jugador
+        playerSelections.rowSelections[row]++;
+        playerSelections.totalSelected++;
+        
+        // Actualizar contador global con las selecciones de este jugador
+        gameState.rowSelections = [...playerSelections.rowSelections];
+        
+        console.log(`Fichas seleccionadas en hilera ${row + 1}: ${playerSelections.rowSelections[row]}/2`);
+        
+        // Revelar la ficha
+        gameState.board[tileIndex].revealed = true;
+        gameState.board[tileIndex].selectedBy = user.username;
+        
+        // Acceder al valor real de la ficha en el tablero del servidor
+        const tileValue = gameState.board[tileIndex].value;
+        
+        // Actualizar puntuación con el valor correcto
+        const oldScore = user.score;
+        user.score += tileValue;
+        const newScore = user.score;
+        
+        console.log(`PUNTUACIÓN ACTUALIZADA: ${user.username} ${oldScore} -> ${newScore} (${tileValue})`);
+        
+        // Añadir información de tipo de sonido correcta
+        const soundType = tileValue > 0 ? 'win' : 'lose';
+        
+        // Emitir eventos con el valor correcto
+        io.emit('tileSelected', {
+            tileIndex,
+            tileValue, // Este valor debe ser correcto desde el servidor
+            playerId: userId,
+            playerUsername: user.username,
+            newScore: newScore,
+            rowSelections: playerSelections.rowSelections,
+            soundType: soundType,
+            timestamp: Date.now()
+        });
+        
+        socket.emit('forceScoreUpdate', newScore);
+        
+        // Guardar estado después de cada selección
+        saveGameState();
+        
+        // Verificar si se revelaron todas las fichas
+        if (checkGameOver()) {
+            console.log("Todas las fichas han sido reveladas. Reiniciando tablero pero manteniendo puntuaciones");
+            
+            // Incrementar contador de mesas para este jugador
+            incrementTableCount(userId);
+            
+            // Reiniciar solo el tablero
+            resetBoardOnly();
+        }
+        
+        // Si el jugador ya seleccionó sus 8 fichas (2 por hilera), pasar al siguiente
+        const allRowsFull = playerSelections.rowSelections.every(count => count >= 2);
+        if (allRowsFull) {
+            console.log(`${user.username} ha seleccionado todas sus fichas permitidas, pasando al siguiente jugador`);
+            socket.emit('message', 'Has seleccionado todas tus fichas permitidas, pasando al siguiente jugador');
+            
+            // Pasar al siguiente jugador
+            clearTimeout(turnTimer);
+            setTimeout(() => {
+                startPlayerTurn();
+            }, 500);
+        }
+    });
+
+    // Agregar este nuevo manejador para sincronización forzada
+    socket.on('syncScore', ({ userId }) => {
+        console.log(`Solicitada sincronización de puntaje para: ${userId}`);
+        const user = getUserById(userId);
+        if (user) {
+            console.log(`Enviando puntaje actualizado: ${user.score}`);
+            socket.emit('directScoreUpdate', user.score);
+        }
+    });
+
+    // Obtener lista de jugadores (solo para admins)
+    socket.on('getPlayers', (callback) => {
+        const userId = connectedSockets[socket.id];
+        if (!userId) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
+
+        const user = getUserById(userId);
+        if (!user || !user.isAdmin) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
+
+        callback({
+            success: true,
+            players: users.filter(u => !u.isAdmin).map(u => ({
+                id: u.id,
+                username: u.username,
+                score: u.score,
+                isBlocked: u.isBlocked
+            }))
+        });
+    });
+
+    // Actualizar puntos (solo para admins)
+    socket.on('updatePoints', ({ userId, points }, callback) => {
+        const adminId = connectedSockets[socket.id];
+        if (!adminId) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
+
+        const admin = getUserById(adminId);
+        if (!admin || !admin.isAdmin) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
+
+        const targetUser = getUserById(userId);
+        if (!targetUser) {
+            callback({ success: false, message: 'Usuario no encontrado' });
+            return;
+        }
+
+        // Actualizar puntuación
+        const newScore = updateUserScore(userId, points);
+
+        // Notificar al usuario, si está conectado
+        const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
+        if (playerSocketId) {
+            io.to(playerSocketId).emit('scoreUpdate', newScore);
+        }
+
+        // Actualizar lista de jugadores para todos los admins
+        io.emit('playersUpdate', users.filter(u => !u.isAdmin).map(u => ({
+            id: u.id,
+            username: u.username,
+            score: u.score,
+            isBlocked: u.isBlocked
+        })));
+        
+        // Guardar estado después de actualizar puntos
+        saveGameState();
+
+        callback({ success: true });
+    });
+
+    // Bloquear/desbloquear usuario (solo para admins)
+    socket.on('toggleBlockUser', ({ userId }, callback) => {
+        const adminId = connectedSockets[socket.id];
+        if (!adminId) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
+
+        const admin = getUserById(adminId);
+        if (!admin || !admin.isAdmin) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
+
+        const targetUser = getUserById(userId);
+        if (!targetUser) {
+            callback({ success: false, message: 'Usuario no encontrado' });
+            return;
+        }
+
+        // Cambiar estado de bloqueo
+        targetUser.isBlocked = !targetUser.isBlocked;
+
+        // Notificar al usuario, si está conectado
+        const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
+        if (playerSocketId) {
+            if (targetUser.isBlocked) {
+                io.to(playerSocketId).emit('blocked');
+            }
+        }
+
+        // Actualizar lista de jugadores para todos los admins
+        io.emit('playersUpdate', users.filter(u => !u.isAdmin).map(u => ({
+            id: u.id,
+            username: u.username,
+            score: u.score,
+            isBlocked: u.isBlocked
+        })));
+
+        // Actualizar el estado del juego para todos
+        io.emit('gameState', {
             board: gameState.board.map(tile => ({
                 ...tile,
                 value: tile.revealed ? tile.value : null
@@ -773,501 +1139,205 @@ io.on('connection', (socket) => {
                 id: player.id,
                 username: player.username,
                 isBlocked: getUserById(player.id).isBlocked,
-                isActive: true
+                isConnected: player.isConnected
             })),
             status: 'playing',
+            turnStartTime: gameState.turnStartTime,
             rowSelections: gameState.rowSelections
         });
         
-        // Guardar estado
+        // Guardar estado después de cambiar bloqueo
         saveGameState();
-    } else {
-        // Actualizar socketId para reconexión
-        const playerIndex = gameState.players.findIndex(player => player.id === userId);
-        if (playerIndex !== -1) {
-            gameState.players[playerIndex].socketId = socket.id;
+
+        callback({ success: true });
+    });
+
+    // Reiniciar juego (solo para admins)
+    socket.on('resetGame', (callback) => {
+        const adminId = connectedSockets[socket.id];
+        if (!adminId) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
         }
 
-        // Asegurarse de que el juego esté en estado 'playing' y haya un jugador actual
-        if (gameState.status !== 'playing') {
-            gameState.status = 'playing';
-           startPlayerTurn(); // Reiniciar el turno si el juego estaba en espera
-       }
+        const admin = getUserById(adminId);
+        if (!admin || !admin.isAdmin) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
 
-       if (!gameState.currentPlayer && gameState.players.length > 0) {
-           gameState.currentPlayer = gameState.players[0];
-           gameState.currentPlayerIndex = 0;
-           startPlayerTurn(); // Asegurar que haya un turno activo
-       }
+        resetGame();
+        callback({ success: true });
+    });
 
-       // Enviar estado actual al jugador reconectado
-       socket.emit('gameState', {
-           board: gameState.board.map(tile => ({
-               ...tile,
-               value: tile.revealed ? tile.value : null
-           })),
-           currentPlayer: gameState.currentPlayer,
-           players: gameState.players.map(player => ({
-               id: player.id,
-               username: player.username,
-               isBlocked: getUserById(player.id).isBlocked,
-               isActive: true
-           })),
-           status: 'playing',  // Forzar estado 'playing' explícitamente aquí también
-           rowSelections: gameState.playerSelections[userId]?.rowSelections || [0, 0, 0, 0]
-       });
-   }
-});
+    // Actualización directa de puntos (para admin) - NUEVO
+    socket.on('directSetPoints', ({ userId, newPoints }, callback) => {
+        const adminId = connectedSockets[socket.id];
+        if (!adminId) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
 
-// Seleccionar una ficha
-socket.on('selectTile', ({ tileIndex }) => {
-   console.log(`Recibido evento selectTile para ficha ${tileIndex} de socket ${socket.id}`);
-   
-   socket.emit('tileSelectResponse', { received: true, tileIndex });
-   
-   const userId = connectedSockets[socket.id];
-   if (!userId) {
-       console.log('Usuario no autenticado, evento ignorado');
-       return;
-   }
-   
-   const user = getUserById(userId);
-   if (!user) {
-       console.log('Usuario no encontrado, evento ignorado');
-       return;
-   }
-   
-   if (user.isBlocked) {
-       console.log('Usuario bloqueado, evento ignorado');
-       return;
-   }
-   
-   // Verificar límite de mesas
-   if (checkTableLimit(userId)) {
-       console.log(`Usuario ${user.username} ha alcanzado el límite diario de mesas`);
-       socket.emit('tableLimitReached', {
-           message: 'Has alcanzado el límite diario de mesas.',
-           unlockTime: `${UNLOCK_HOUR}:00 AM`
-       });
-       return;
-   }
-   
-   // Permitir seleccionar si es el único jugador o si es su turno
-   if (gameState.players.length > 1 && gameState.currentPlayer.id !== userId) {
-       console.log(`No es el turno de ${user.username}, es el turno de ${gameState.currentPlayer.username}`);
-       return;
-   }
-   
-   // Verificar si el tiempo se agotó
-   const tiempoTranscurrido = Date.now() - gameState.turnStartTime;
-   if (tiempoTranscurrido > 4000) {
-       console.log(`Tiempo agotado para ${user.username}, han pasado ${tiempoTranscurrido}ms`);
-       socket.emit('message', 'Tiempo agotado para este turno');
-       return;
-   }
-   
-   if (tileIndex < 0 || tileIndex >= gameState.board.length) {
-       console.log(`Índice de ficha ${tileIndex} fuera de rango`);
-       return;
-   }
-   
-   if (gameState.board[tileIndex].revealed) {
-       console.log(`Ficha ${tileIndex} ya revelada`);
-       return;
-   }
-   
-   // Obtener o inicializar selecciones del jugador
-   const playerSelections = initPlayerSelections(userId);
-   
-   // Determinar a qué hilera pertenece esta ficha (4 fichas por hilera en un tablero 4x4)
-   const row = Math.floor(tileIndex / 4);
-   
-   // Verificar si ya se seleccionaron 2 fichas de esta hilera
-   if (playerSelections.rowSelections[row] >= 2) {
-       console.log(`Jugador ${user.username} ya seleccionó 2 fichas de la hilera ${row + 1}`);
-       socket.emit('message', `Ya has seleccionado 2 fichas de la hilera ${row + 1}`);
-       return;
-   }
-   
-   console.log(`Jugador ${user.username} seleccionó ficha ${tileIndex} de la hilera ${row + 1}`);
-   
-   // Incrementar contador para esta hilera específica del jugador
-   playerSelections.rowSelections[row]++;
-   playerSelections.totalSelected++;
-   
-   // Actualizar contador global con las selecciones de este jugador
-   gameState.rowSelections = [...playerSelections.rowSelections];
-   
-   console.log(`Fichas seleccionadas en hilera ${row + 1}: ${playerSelections.rowSelections[row]}/2`);
-   
-   // Revelar la ficha
-   gameState.board[tileIndex].revealed = true;
-   gameState.board[tileIndex].selectedBy = user.username;
-   const tileValue = gameState.board[tileIndex].value;
-   
-   // Actualizar puntuación
-   const oldScore = user.score;
-   user.score += tileValue;
-   const newScore = user.score;
-   
-   console.log(`PUNTUACIÓN ACTUALIZADA: ${user.username} ${oldScore} -> ${newScore} (${tileValue})`);
-   
-   // Añadir información de tipo de sonido para la ficha seleccionada
-   const soundType = tileValue > 0 ? 'win' : 'lose';
-   
-   // Emitir eventos
-   io.emit('tileSelected', {
-       tileIndex,
-       tileValue,
-       playerId: userId,
-       playerUsername: user.username,
-       newScore: newScore,
-       rowSelections: playerSelections.rowSelections,
-       soundType: soundType,
-       timestamp: Date.now()
-   });
-   
-   socket.emit('forceScoreUpdate', newScore);
-   
-   // Guardar estado después de cada selección
-   saveGameState();
-   
-   // Verificar si se revelaron todas las fichas
-   if (checkGameOver()) {
-       console.log("Todas las fichas han sido reveladas. Reiniciando tablero pero manteniendo puntuaciones");
-       
-       // Incrementar contador de mesas para este jugador
-       incrementTableCount(userId);
-       
-       // Reiniciar solo el tablero
-       resetBoardOnly();
-   }
-   
-   // Si el jugador ya seleccionó sus 8 fichas (2 por hilera), pasar al siguiente
-   const allRowsFull = playerSelections.rowSelections.every(count => count >= 2);
-   if (allRowsFull) {
-       console.log(`${user.username} ha seleccionado todas sus fichas permitidas, pasando al siguiente jugador`);
-       socket.emit('message', 'Has seleccionado todas tus fichas permitidas, pasando al siguiente jugador');
-       
-       // Pasar al siguiente jugador
-       clearTimeout(turnTimer);
-       setTimeout(() => {
-           startPlayerTurn();
-       }, 500);
-   }
-});
+        const admin = getUserById(adminId);
+        if (!admin || !admin.isAdmin) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
 
-// Agregar este nuevo manejador para sincronización forzada
-socket.on('syncScore', ({ userId }) => {
-   console.log(`Solicitada sincronización de puntaje para: ${userId}`);
-   const user = getUserById(userId);
-   if (user) {
-       console.log(`Enviando puntaje actualizado: ${user.score}`);
-       socket.emit('directScoreUpdate', user.score);
-   }
-});
+        const targetUser = getUserById(userId);
+        if (!targetUser) {
+            callback({ success: false, message: 'Usuario no encontrado' });
+            return;
+        }
 
-// Obtener lista de jugadores (solo para admins)
-socket.on('getPlayers', (callback) => {
-   const userId = connectedSockets[socket.id];
-   if (!userId) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
+        // Establecer puntuación directamente
+        targetUser.score = parseInt(newPoints, 10);
+        
+        // Guardar estado después de actualizar puntos
+        saveGameState();
 
-   const user = getUserById(userId);
-   if (!user || !user.isAdmin) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
+        // Notificar al usuario, si está conectado
+        const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
+        if (playerSocketId) {
+            io.to(playerSocketId).emit('forceScoreUpdate', targetUser.score);
+        }
 
-   callback({
-       success: true,
-       players: users.filter(u => !u.isAdmin).map(u => ({
-           id: u.id,
-           username: u.username,
-           score: u.score,
-           isBlocked: u.isBlocked
-       }))
-   });
-});
+        // Actualizar lista de jugadores para todos los admins
+        io.emit('playersUpdate', users.filter(u => !u.isAdmin).map(u => ({
+            id: u.id,
+            username: u.username,
+            score: u.score,
+            isBlocked: u.isBlocked
+        })));
 
-// Actualizar puntos (solo para admins)
-socket.on('updatePoints', ({ userId, points }, callback) => {
-   const adminId = connectedSockets[socket.id];
-   if (!adminId) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
+        callback({ success: true });
+    });
 
-   const admin = getUserById(adminId);
-   if (!admin || !admin.isAdmin) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
+    // Evento para desbloquear mesas (solo para admins)
+    socket.on('unlockTables', ({ userId }, callback) => {
+        const adminId = connectedSockets[socket.id];
+        if (!adminId) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
 
-   const targetUser = getUserById(userId);
-   if (!targetUser) {
-       callback({ success: false, message: 'Usuario no encontrado' });
-       return;
-   }
+        const admin = getUserById(adminId);
+        if (!admin || !admin.isAdmin) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
 
-   // Actualizar puntuación
-   const newScore = updateUserScore(userId, points);
+        const targetUser = getUserById(userId);
+        if (!targetUser) {
+            callback({ success: false, message: 'Usuario no encontrado' });
+            return;
+        }
 
-   // Notificar al usuario, si está conectado
-   const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
-   if (playerSocketId) {
-       io.to(playerSocketId).emit('scoreUpdate', newScore);
-   }
+        // Reiniciar contador de mesas para este usuario
+        playerTableCount[userId] = 0;
+        
+        // Notificar al usuario
+        const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
+        if (playerSocketId) {
+            io.to(playerSocketId).emit('tablesUnlocked');
+            io.to(playerSocketId).emit('tablesUpdate', {
+                tablesPlayed: 0,
+                maxReached: false,
+                lockReason: ''
+            });
+        }
+        
+        // Guardar estado
+        saveGameState();
 
-   // Actualizar lista de jugadores para todos los admins
-   io.emit('playersUpdate', users.filter(u => !u.isAdmin).map(u => ({
-       id: u.id,
-       username: u.username,
-       score: u.score,
-       isBlocked: u.isBlocked
-   })));
-   
-   // Guardar estado después de actualizar puntos
-   saveGameState();
+        callback({ success: true });
+    });
 
-   callback({ success: true });
-});
+    // Salir del juego
+    socket.on('leaveGame', () => {
+        const userId = connectedSockets[socket.id];
+        if (!userId) return;
 
-// Bloquear/desbloquear usuario (solo para admins)
-socket.on('toggleBlockUser', ({ userId }, callback) => {
-   const adminId = connectedSockets[socket.id];
-   if (!adminId) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
+        // Marcar al jugador como desconectado
+        const playerIndex = gameState.players.findIndex(player => player.id === userId);
+        if (playerIndex !== -1) {
+            const player = gameState.players[playerIndex];
+            player.isConnected = false;
+            
+            // Notificar a todos los clientes sobre la desconexión
+            io.emit('playerConnectionChanged', {
+                playerId: userId,
+                isConnected: false,
+                username: player.username
+            });
+            
+            console.log(`Jugador ${player.username} marcado como desconectado al abandonar el juego`);
 
-   const admin = getUserById(adminId);
-   if (!admin || !admin.isAdmin) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
+            // Si era el turno de este jugador, pasar al siguiente inmediatamente
+            if (gameState.currentPlayer && gameState.currentPlayer.id === userId) {
+                clearTimeout(turnTimer);
+                
+                // Pasar al siguiente jugador después de un momento
+                setTimeout(() => {
+                    startPlayerTurn();
+                }, 1000);
+            }
 
-   const targetUser = getUserById(userId);
-   if (!targetUser) {
-       callback({ success: false, message: 'Usuario no encontrado' });
-       return;
-   }
+            // Actualizar estado para todos
+            io.emit('gameState', {
+                board: gameState.board.map(tile => ({
+                    ...tile,
+                    value: tile.revealed ? tile.value : null
+                })),
+                currentPlayer: gameState.currentPlayer,
+                players: gameState.players.map(player => ({
+                    id: player.id,
+                    username: player.username,
+                    isBlocked: getUserById(player.id).isBlocked,
+                    isConnected: player.isConnected
+                })),
+                status: 'playing', // Mantener el estado como 'playing' siempre
+                turnStartTime: gameState.turnStartTime,
+                rowSelections: gameState.rowSelections
+            });
+            
+            // Guardar estado después de salir del juego
+            saveGameState();
+        }
+    });
 
-   // Cambiar estado de bloqueo
-   targetUser.isBlocked = !targetUser.isBlocked;
+    // Desconexión
+    socket.on('disconnect', () => {
+        console.log(`Usuario desconectado: ${socket.id}`);
 
-   // Notificar al usuario, si está conectado
-   const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
-   if (playerSocketId) {
-       if (targetUser.isBlocked) {
-           io.to(playerSocketId).emit('blocked');
-       }
-   }
+        const userId = connectedSockets[socket.id];
+        if (userId) {
+            delete connectedSockets[socket.id];
 
-   // Actualizar lista de jugadores para todos los admins
-   io.emit('playersUpdate', users.filter(u => !u.isAdmin).map(u => ({
-       id: u.id,
-       username: u.username,
-       score: u.score,
-       isBlocked: u.isBlocked
-   })));
-
-   // Actualizar el estado del juego para todos
-   io.emit('gameState', {
-       board: gameState.board.map(tile => ({
-           ...tile,
-           value: tile.revealed ? tile.value : null
-       })),
-       currentPlayer: gameState.currentPlayer,
-       players: gameState.players.map(player => ({
-           id: player.id,
-           username: player.username,
-           isBlocked: getUserById(player.id).isBlocked,
-           isActive: true
-       })),
-       status: 'playing',
-       turnStartTime: gameState.turnStartTime,
-       rowSelections: gameState.rowSelections
-   });
-   
-   // Guardar estado después de cambiar bloqueo
-   saveGameState();
-
-   callback({ success: true });
-});
-
-// Reiniciar juego (solo para admins)
-socket.on('resetGame', (callback) => {
-   const adminId = connectedSockets[socket.id];
-   if (!adminId) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
-
-   const admin = getUserById(adminId);
-   if (!admin || !admin.isAdmin) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
-
-   resetGame();
-   callback({ success: true });
-});
-
-// Actualización directa de puntos (para admin) - NUEVO
-socket.on('directSetPoints', ({ userId, newPoints }, callback) => {
-   const adminId = connectedSockets[socket.id];
-   if (!adminId) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
-
-   const admin = getUserById(adminId);
-   if (!admin || !admin.isAdmin) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
-
-   const targetUser = getUserById(userId);
-   if (!targetUser) {
-       callback({ success: false, message: 'Usuario no encontrado' });
-       return;
-   }
-
-   // Establecer puntuación directamente
-   targetUser.score = parseInt(newPoints, 10);
-   
-   // Guardar estado después de actualizar puntos
-   saveGameState();
-
-   // Notificar al usuario, si está conectado
-   const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
-   if (playerSocketId) {
-       io.to(playerSocketId).emit('forceScoreUpdate', targetUser.score);
-   }
-
-   // Actualizar lista de jugadores para todos los admins
-   io.emit('playersUpdate', users.filter(u => !u.isAdmin).map(u => ({
-       id: u.id,
-       username: u.username,
-       score: u.score,
-       isBlocked: u.isBlocked
-   })));
-
-   callback({ success: true });
-});
-
-// Evento para desbloquear mesas (solo para admins)
-socket.on('unlockTables', ({ userId }, callback) => {
-   const adminId = connectedSockets[socket.id];
-   if (!adminId) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
-
-   const admin = getUserById(adminId);
-   if (!admin || !admin.isAdmin) {
-       callback({ success: false, message: 'No autorizado' });
-       return;
-   }
-
-   const targetUser = getUserById(userId);
-   if (!targetUser) {
-       callback({ success: false, message: 'Usuario no encontrado' });
-       return;
-   }
-
-   // Reiniciar contador de mesas para este usuario
-   playerTableCount[userId] = 0;
-   
-   // Notificar al usuario
-   const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
-   if (playerSocketId) {
-       io.to(playerSocketId).emit('tablesUnlocked');
-       io.to(playerSocketId).emit('tablesUpdate', {
-           tablesPlayed: 0,
-           maxReached: false,
-           lockReason: ''
-       });
-   }
-   
-   // Guardar estado
-   saveGameState();
-
-   callback({ success: true });
-});
-
-// Salir del juego
-socket.on('leaveGame', () => {
-   const userId = connectedSockets[socket.id];
-   if (!userId) return;
-
-   // Eliminar jugador de la lista
-   const playerIndex = gameState.players.findIndex(player => player.id === userId);
-   if (playerIndex !== -1) {
-       gameState.players.splice(playerIndex, 1);
-
-       // Si era el turno de este jugador, pasar al siguiente
-       if (gameState.currentPlayer && gameState.currentPlayer.id === userId) {
-           clearTimeout(turnTimer);
-           if (gameState.players.length > 0) {
-               startPlayerTurn();
-           }
-       }
-
-       // Si no quedan jugadores, mantener el estado en 'playing' pero sin jugador actual
-       if (gameState.players.length === 0) {
-           gameState.currentPlayer = null;
-           clearTimeout(turnTimer);
-       }
-
-       // Actualizar estado para todos
-       io.emit('gameState', {
-           board: gameState.board.map(tile => ({
-               ...tile,
-               value: tile.revealed ? tile.value : null
-           })),
-           currentPlayer: gameState.currentPlayer,
-           players: gameState.players.map(player => ({
-               id: player.id,
-               username: player.username,
-               isBlocked: getUserById(player.id).isBlocked,
-               isActive: true
-           })),
-           status: 'playing', // Mantener el estado como 'playing' siempre
-           turnStartTime: gameState.turnStartTime,
-           rowSelections: gameState.rowSelections
-       });
-       
-       // Guardar estado después de salir del juego
-       saveGameState();
-   }
-});
-
-// Desconexión
-socket.on('disconnect', () => {
-   console.log(`Usuario desconectado: ${socket.id}`);
-
-   const userId = connectedSockets[socket.id];
-   if (userId) {
-       // No eliminamos al jugador inmediatamente para permitir reconexiones
-       delete connectedSockets[socket.id];
-
-       // Si era el turno de este jugador, pasar al siguiente después de un tiempo
-       if (gameState.currentPlayer && gameState.currentPlayer.id === userId) {
-           clearTimeout(turnTimer);
-           setTimeout(() => {
-               // Verificar si el jugador se reconectó
-               const reconnected = Object.values(connectedSockets).includes(userId);
-               if (!reconnected) {
-                   startPlayerTurn();
-               }
-           }, 5000);
-       }
-   }
-});
+            // Marcar al jugador como desconectado pero mantenerlo en la lista
+            const playerIndex = gameState.players.findIndex(player => player.id === userId);
+            if (playerIndex !== -1) {
+                gameState.players[playerIndex].isConnected = false;
+                console.log(`Jugador ${gameState.players[playerIndex].username} marcado como desconectado`);
+                
+                // Si era el turno de este jugador, pasar al siguiente inmediatamente
+                if (gameState.currentPlayer && gameState.currentPlayer.id === userId) {
+                    clearTimeout(turnTimer);
+                    console.log(`Saltando el turno del jugador desconectado ${gameState.players[playerIndex].username}`);
+                    setTimeout(() => {
+                        startPlayerTurn();
+                    }, 1000);
+                }
+                
+                // Notificar a todos los clientes sobre la desconexión
+                io.emit('playerConnectionChanged', {
+                    playerId: userId,
+                    isConnected: false,
+                    username: gameState.players[playerIndex].username
+                });
+            }
+        }
+    });
 });
 
 // Configurar guardado periódico cada 5 minutos
@@ -1275,11 +1345,11 @@ setInterval(saveGameState, 5 * 60 * 1000);
 
 // Endpoint para verificar la configuración de CORS (para depuración)
 app.get('/cors-config', (req, res) => {
-res.json({
-corsOrigins: Array.isArray(corsOptions.origin) ? corsOptions.origin : [corsOptions.origin],
-environment: process.env.NODE_ENV,
-clientUrl: process.env.CLIENT_URL
-});
+ res.json({
+   corsOrigins: Array.isArray(corsOptions.origin) ? corsOptions.origin : [corsOptions.origin],
+   environment: process.env.NODE_ENV,
+   clientUrl: process.env.CLIENT_URL
+ });
 });
 
 // Logs de inicio
@@ -1289,10 +1359,10 @@ console.log('URL del cliente:', process.env.CLIENT_URL);
 // Iniciar servidor
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-console.log(`Servidor ejecutándose en el puerto ${PORT}`);
+   console.log(`Servidor ejecutándose en el puerto ${PORT}`);
 });
 
 // Ruta básica para comprobar que el servidor está funcionando
 app.get('/', (req, res) => {
-res.send('Servidor del juego de memoria funcionando');
+   res.send('Servidor del juego de memoria funcionando');
 });
