@@ -467,6 +467,32 @@ function resetGame() {
     // Guardar estado después del reset
     saveGameState();
 }
+
+// Función para sincronizar el estado del jugador
+function syncPlayerState(userId, socketId) {
+  const user = getUserById(userId);
+  if (!user) return;
+  
+  // Enviar puntaje actualizado
+  io.to(socketId).emit('forceScoreUpdate', user.score);
+  
+  // Enviar estado completo del juego
+  io.to(socketId).emit('gameState', {
+    board: gameState.board.map(tile => ({
+      ...tile,
+      value: tile.revealed ? tile.value : null
+    })),
+    currentPlayer: gameState.currentPlayer,
+    players: gameState.players.map(player => ({
+      id: player.id,
+      username: player.username,
+      isBlocked: getUserById(player.id).isBlocked,
+      isConnected: player.isConnected
+    })),
+    status: 'playing',
+    rowSelections: gameState.playerSelections[userId]?.rowSelections || [0, 0, 0, 0]
+  });
+}
   
 // Función para iniciar el turno de un jugador
 function startPlayerTurn() {
@@ -872,7 +898,7 @@ io.on('connection', (socket) => {
     });
 
     // Seleccionar una ficha
-    socket.on('selectTile', ({ tileIndex }) => {
+    socket.on('selectTile', ({ tileIndex, currentScore }) => {
         console.log(`Recibido evento selectTile para ficha ${tileIndex} de socket ${socket.id}`);
         
         socket.emit('tileSelectResponse', { received: true, tileIndex });
@@ -923,9 +949,17 @@ io.on('connection', (socket) => {
             return;
         }
         
+        // VERIFICACIÓN CRÍTICA: Asegurarse de que no se pueda seleccionar la misma ficha dos veces
         if (gameState.board[tileIndex].revealed) {
-            console.log(`Ficha ${tileIndex} ya revelada`);
+            console.log(`IGNORANDO selección repetida para ficha ${tileIndex}`);
             return;
+        }
+        
+        // Asegurarse de que los valores de punto son precisamente los esperados
+        if (gameState.board[tileIndex].value !== 15000 && gameState.board[tileIndex].value !== -15000) {
+            console.error(`VALOR DE FICHA INCORRECTO: ${gameState.board[tileIndex].value}`);
+            // Corregir el valor
+            gameState.board[tileIndex].value = Math.sign(gameState.board[tileIndex].value) * 15000;
         }
         
         // Obtener o inicializar selecciones del jugador
@@ -959,9 +993,14 @@ io.on('connection', (socket) => {
         // Acceder al valor real de la ficha en el tablero del servidor
         const tileValue = gameState.board[tileIndex].value;
         
+        // Verificar si hay una discrepancia grande entre el puntaje del cliente y del servidor
+        if (currentScore !== undefined && Math.abs(currentScore - user.score) > 15000) {
+            console.warn(`ADVERTENCIA: Posible inconsistencia en puntaje del cliente ${currentScore} vs servidor ${user.score}`);
+        }
+        
         // Actualizar puntuación con el valor correcto
         const oldScore = user.score;
-        user.score += tileValue;
+        user.score += tileValue; // Sumar exactamente el valor de la ficha
         const newScore = user.score;
         
         console.log(`PUNTUACIÓN ACTUALIZADA: ${user.username} ${oldScore} -> ${newScore} (${tileValue})`);
@@ -1018,6 +1057,9 @@ io.on('connection', (socket) => {
         if (user) {
             console.log(`Enviando puntaje actualizado: ${user.score}`);
             socket.emit('directScoreUpdate', user.score);
+            
+            // Sincronizar estado completo del juego
+            syncPlayerState(userId, socket.id);
         }
     });
 
