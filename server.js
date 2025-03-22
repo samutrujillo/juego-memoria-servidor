@@ -61,7 +61,7 @@ const users = [
     { id: '8', username: 'jugador8', password: 'clave8', score: 60000, isAdmin: false, isBlocked: false },
     { id: '9', username: 'jugador9', password: 'clave9', score: 60000, isAdmin: false, isBlocked: false },
     { id: '10', username: 'jugador10', password: 'clave10', score: 60000, isAdmin: false, isBlocked: false },
-    { id: 'admin', username: 'admin', password: 'admin123', score: 60000, isAdmin: true, isBlocked: false }
+    { id: 'admin', username: 'admin', password: 'admin1998', score: 60000, isAdmin: true, isBlocked: false }
 ];
   
 // Mapa de Socket IDs a usuarios
