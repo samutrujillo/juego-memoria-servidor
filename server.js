@@ -51,17 +51,17 @@ const io = new Server(server, {
   
 // Datos de usuario (en una aplicación real, esto estaría en una base de datos)
 const users = [
-    { id: '1', username: 'jugador1', password: 'clave1', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '2', username: 'jugador2', password: 'clave2', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '3', username: 'jugador3', password: 'clave3', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '4', username: 'jugador4', password: 'clave4', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '5', username: 'jugador5', password: 'clave5', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '6', username: 'jugador6', password: 'clave6', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '7', username: 'jugador7', password: 'clave7', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '8', username: 'jugador8', password: 'clave8', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '9', username: 'jugador9', password: 'clave9', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '10', username: 'jugador10', password: 'clave10', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: 'admin', username: 'admin', password: 'admin1998', score: 6000, prevScore: 6000, isAdmin: true, isBlocked: false, isLockedDueToScore: false }
+    { id: '1', username: 'jugador1', password: 'clave1', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '2', username: 'jugador2', password: 'clave2', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '3', username: 'jugador3', password: 'clave3', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '4', username: 'jugador4', password: 'clave4', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '5', username: 'jugador5', password: 'clave5', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '6', username: 'jugador6', password: 'clave6', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '7', username: 'jugador7', password: 'clave7', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '8', username: 'jugador8', password: 'clave8', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '9', username: 'jugador9', password: 'clave9', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '10', username: 'jugador10', password: 'clave10', score: 60000, prevScore: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: 'admin', username: 'admin', password: 'admin123', score: 60000, prevScore: 60000, isAdmin: true, isBlocked: false, isLockedDueToScore: false }
 ];
   
 // Mapa de Socket IDs a usuarios
@@ -475,11 +475,11 @@ function resetGame() {
     // Reiniciar el número de mesa global
     globalTableNumber = 1;
     
-    // Reiniciar el puntaje de todos los jugadores a 6,000
+    // Reiniciar el puntaje de todos los jugadores a 60,000
     users.forEach(user => {
         if (!user.isAdmin) {
-            user.prevScore = 6000;
-            user.score = 6000;
+            user.prevScore = 60000;
+            user.score = 60000;
             user.isBlocked = false;
             user.isLockedDueToScore = false; // Desbloquear por puntaje también
         }
@@ -522,13 +522,13 @@ function resetGame() {
             io.to(player.socketId).emit('blockStatusChanged', {
                 isLockedDueToScore: false,
                 isBlocked: false,
-                message: 'El administrador ha reiniciado el juego. Tu puntaje ha sido restablecido a 6,000.'
+                message: 'El administrador ha reiniciado el juego. Tu puntaje ha sido restablecido a 60,000.'
             });
         }
     });
 
     // Notificar a todos los jugadores
-    io.emit('message', 'El administrador ha reiniciado el juego. Todos los puntajes han sido restablecidos a 6,000.');
+    io.emit('message', 'El administrador ha reiniciado el juego. Todos los puntajes han sido restablecidos a 60,000.');
 
     if (gameState.players.length > 0) {
         startPlayerTurn();
