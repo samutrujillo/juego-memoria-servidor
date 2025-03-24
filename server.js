@@ -18,7 +18,7 @@ const GAME_STATE_FILE = path.join(__dirname, 'game-state.json');
 
 // Añadir estas nuevas variables para el sistema de mesas
 const MAX_TABLES_PER_DAY = 10;
-const UNLOCK_HOUR = 6; // 6 AM
+const UNLOCK_HOUR = 6; // 6 AM (ya no se usará para reseteo automático)
 const playerGameState = {}; // Para guardar el estado de juego de cada jugador
 const playerTableCount = {}; // Contar mesas jugadas por cada jugador
 let globalTableNumber = 1; // Mesa global que todos los jugadores verán
@@ -51,17 +51,17 @@ const io = new Server(server, {
   
 // Datos de usuario (en una aplicación real, esto estaría en una base de datos)
 const users = [
-    { id: '1', username: 'jugador1', password: 'clave1', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '2', username: 'jugador2', password: 'clave2', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '3', username: 'jugador3', password: 'clave3', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '4', username: 'jugador4', password: 'clave4', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '5', username: 'jugador5', password: 'clave5', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '6', username: 'jugador6', password: 'clave6', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '7', username: 'jugador7', password: 'clave7', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '8', username: 'jugador8', password: 'clave8', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '9', username: 'jugador9', password: 'clave9', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '10', username: 'jugador10', password: 'clave10', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: 'admin', username: 'admin', password: 'admin1998', score: 6000, isAdmin: true, isBlocked: false, isLockedDueToScore: false }
+    { id: '1', username: 'jugador1', password: 'clave1', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '2', username: 'jugador2', password: 'clave2', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '3', username: 'jugador3', password: 'clave3', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '4', username: 'jugador4', password: 'clave4', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '5', username: 'jugador5', password: 'clave5', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '6', username: 'jugador6', password: 'clave6', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '7', username: 'jugador7', password: 'clave7', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '8', username: 'jugador8', password: 'clave8', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '9', username: 'jugador9', password: 'clave9', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '10', username: 'jugador10', password: 'clave10', score: 6000, prevScore: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: 'admin', username: 'admin', password: 'admin1998', score: 6000, prevScore: 6000, isAdmin: true, isBlocked: false, isLockedDueToScore: false }
 ];
   
 // Mapa de Socket IDs a usuarios
@@ -84,40 +84,42 @@ let gameState = {
 let turnTimer = null;
 
 // Función para verificar si un usuario debe ser bloqueado por puntos exactos
+// o por caer desde 60,000 a 23,000 o menos
 function checkScoreLimit(user) {
-    if (user.score === 23000 && !user.isAdmin) {
-        console.log(`Usuario ${user.username} bloqueado por alcanzar 23,000 puntos exactos`);
-        
-        // Agregar campo isLockedDueToScore para distinguir este tipo de bloqueo
+    if ((user.score === 23000 || (user.score <= 23000 && user.prevScore >= 60000)) && !user.isAdmin) {
+        console.log(`Usuario ${user.username} bloqueado por alcanzar 23,000 puntos o bajar desde 60,000`);
         user.isLockedDueToScore = true;
-        
         return true;
     }
     return false;
 }
 
-// Nueva función para verificar y reiniciar el contador de mesas
+// Esta función ya no realiza un reseteo automático
 function checkAndResetTableCounters() {
-    const now = new Date();
-    const currentDate = now.toDateString();
-    
-    if (gameState.lastTableResetDate !== currentDate && now.getHours() >= UNLOCK_HOUR) {
-        // Reiniciar contadores diarios
-        Object.keys(playerTableCount).forEach(userId => {
-            playerTableCount[userId] = 0;
-        });
-        gameState.lastTableResetDate = currentDate;
-        gameState.tableCount = 0;
-        
-        // Notificar a todos los clientes
-        io.emit('tablesUnlocked', { message: 'Mesas desbloqueadas para un nuevo día' });
-        
-        console.log('Contadores de mesas reiniciados para un nuevo día');
-    }
+    // Esta función ya no hace ningún reinicio automático
+    // Solo se mantiene para posible uso futuro o para eventos programados específicos
+    console.log("Verificación programada de contadores de mesa (no se realiza reinicio automático)");
 }
 
-// Configurar comprobación periódica cada minuto
-setInterval(checkAndResetTableCounters, 60 * 1000);
+// Mantener la verificación periódica por posibles usos futuros
+setInterval(checkAndResetTableCounters, 60 * 60 * 1000); // Cada hora en vez de cada minuto
+
+// Función para reinicio manual por admin
+function adminResetTableCounters() {
+    // Reiniciar contadores para todos los jugadores
+    Object.keys(playerTableCount).forEach(userId => {
+        playerTableCount[userId] = 0;
+    });
+    
+    gameState.lastTableResetDate = new Date().toDateString();
+    gameState.tableCount = 0;
+    
+    // Notificar a todos los clientes
+    io.emit('tablesUnlocked', { message: 'El administrador ha reiniciado los contadores de mesas.' });
+    
+    console.log('Contadores de mesas reiniciados por administrador');
+    saveGameState();
+}
 
 // Función para verificar el límite de mesas
 function checkTableLimit(userId) {
@@ -164,6 +166,7 @@ function saveGameState() {
         userScores: users.reduce((obj, user) => {
             obj[user.id] = {
                 score: user.score,
+                prevScore: user.prevScore,
                 isBlocked: user.isBlocked,
                 isLockedDueToScore: user.isLockedDueToScore,
                 tablesPlayed: playerTableCount[user.id] || 0
@@ -230,6 +233,7 @@ function loadGameState() {
                     const user = users.find(u => u.id === userId);
                     if (user) {
                         user.score = savedState.userScores[userId].score;
+                        user.prevScore = savedState.userScores[userId].prevScore || user.score;
                         user.isBlocked = savedState.userScores[userId].isBlocked;
                         user.isLockedDueToScore = savedState.userScores[userId].isLockedDueToScore || false;
                         
@@ -338,20 +342,25 @@ function updateUserScore(id, points) {
     const user = getUserById(id);
     if (user) {
         console.log(`Actualizando puntuación de ${user.username}: ${user.score} + ${points}`);
+        // Guardar puntuación anterior
+        user.prevScore = user.score;
         user.score += points;
         console.log(`Nueva puntuación: ${user.score}`);
         
-        // Verificar si debe ser bloqueado
+        // Verificar si debe ser bloqueado (incluye caer desde 60,000 a 23,000)
         const shouldBlock = checkScoreLimit(user);
         if (shouldBlock && !user.isLockedDueToScore) {
             user.isLockedDueToScore = true;
             
-            // Notificar al usuario sobre el bloqueo
             const playerSocketId = gameState.players.find(p => p.id === id)?.socketId;
             if (playerSocketId) {
-                io.to(playerSocketId).emit('message', 'Has sido bloqueado por alcanzar 23,000 puntos exactos. Contacta al administrador para recargar.');
+                io.to(playerSocketId).emit('message', 'Has sido bloqueado por alcanzar o llegar a 23,000 puntos. Contacta al administrador para recargar.');
                 io.to(playerSocketId).emit('scoreLimitReached', { 
-                    message: 'Has alcanzado 23,000 puntos exactos y has sido bloqueado temporalmente.' 
+                    message: 'Has alcanzado o llegado a 23,000 puntos y has sido bloqueado temporalmente.' 
+                });
+                io.to(playerSocketId).emit('blockStatusChanged', { 
+                    isLockedDueToScore: true,
+                    message: 'Has alcanzado o llegado a 23,000 puntos y has sido bloqueado temporalmente.' 
                 });
             }
         }
@@ -426,8 +435,7 @@ function resetBoardOnly() {
             // Si alcanzó el límite, notificar
             if (playerTableCount[playerId] >= MAX_TABLES_PER_DAY) {
                 io.to(playerSocketId).emit('tableLimitReached', {
-                    message: 'Has alcanzado el límite diario de mesas.',
-                    unlockTime: `${UNLOCK_HOUR}:00 AM`
+                    message: 'Has alcanzado el límite diario de mesas.'
                 });
             }
         }
@@ -441,6 +449,7 @@ function resetBoardOnly() {
             id: player.id,
             username: player.username,
             isBlocked: getUserById(player.id).isBlocked,
+            isLockedDueToScore: getUserById(player.id).isLockedDueToScore,
             isConnected: player.isConnected
         })),
         status: 'playing',
@@ -469,6 +478,7 @@ function resetGame() {
     // Reiniciar el puntaje de todos los jugadores a 6,000
     users.forEach(user => {
         if (!user.isAdmin) {
+            user.prevScore = 6000;
             user.score = 6000;
             user.isBlocked = false;
             user.isLockedDueToScore = false; // Desbloquear por puntaje también
@@ -508,6 +518,12 @@ function resetGame() {
         const user = getUserById(player.id);
         if (user && player.socketId) {
             io.to(player.socketId).emit('forceScoreUpdate', user.score);
+            // Notificar el cambio de estado de bloqueo
+            io.to(player.socketId).emit('blockStatusChanged', {
+                isLockedDueToScore: false,
+                isBlocked: false,
+                message: 'El administrador ha reiniciado el juego. Tu puntaje ha sido restablecido a 6,000.'
+            });
         }
     });
 
@@ -549,75 +565,76 @@ function syncPlayerState(userId, socketId) {
   });
 }
   
-// Función para iniciar el turno de un jugador
+// Función para iniciar el turno de un jugador, modificada para saltar jugadores desconectados
 function startPlayerTurn() {
     if (gameState.players.length === 0) return;
 
-    // IMPORTANTE: Agregar este log para depuración
     console.log(`startPlayerTurn llamada con ${gameState.players.length} jugadores`);
-
-    // Siempre forzar el estado a 'playing'
     gameState.status = 'playing';
-    
-    // Reiniciar contador global de hileras
     gameState.rowSelections = [0, 0, 0, 0];
 
-    // Si solo hay un jugador, ese jugador siempre es el actual
-    if (gameState.players.length === 1) {
-        gameState.currentPlayerIndex = 0;
-        gameState.currentPlayer = gameState.players[0];
-
-        // Solo establecer temporizador si está conectado
-        if (gameState.currentPlayer.isConnected) {
-            clearTimeout(turnTimer);
-            turnTimer = setTimeout(() => {
-                console.log(`Tiempo agotado para ${gameState.currentPlayer.username}`);
-                io.emit('turnTimeout', { playerId: gameState.currentPlayer.id });
-                setTimeout(() => {
-                    startPlayerTurn();
-                }, 500);
-            }, 4000);
-        } else {
-            // Si el único jugador está desconectado, reiniciar su turno brevemente
+    // Filtrar jugadores conectados y no bloqueados
+    let eligiblePlayers = gameState.players.filter(player => {
+        const userData = getUserById(player.id);
+        return player.isConnected && userData && !userData.isBlocked && !userData.isLockedDueToScore && !userData.isAdmin;
+    });
+    
+    if (eligiblePlayers.length === 0) {
+        console.log("No hay jugadores elegibles, esperando reconexión o desbloqueo...");
+        return;
+    }
+    
+    if (eligiblePlayers.length === 1) {
+        // Encontrar el índice del jugador elegible en la lista principal
+        const eligiblePlayerIndex = gameState.players.findIndex(p => p.id === eligiblePlayers[0].id);
+        gameState.currentPlayerIndex = eligiblePlayerIndex;
+        gameState.currentPlayer = gameState.players[eligiblePlayerIndex];
+        
+        clearTimeout(turnTimer);
+        turnTimer = setTimeout(() => {
+            console.log(`Tiempo agotado para ${gameState.currentPlayer.username}`);
+            io.emit('turnTimeout', { playerId: gameState.currentPlayer.id });
             setTimeout(() => {
                 startPlayerTurn();
-            }, 1000);
-        }
+            }, 500);
+        }, 4000);
     } else {
-        // Lógica para múltiples jugadores, necesitamos encontrar el siguiente jugador conectado
+        // Para múltiples jugadores, buscar el siguiente jugador elegible
         let nextPlayerFound = false;
         let loopCount = 0;
+        let originalIndex = gameState.currentPlayerIndex;
         
         // Comenzar desde el siguiente jugador
         gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % gameState.players.length;
         
-        // Buscar al siguiente jugador conectado y no bloqueado
         while (!nextPlayerFound && loopCount < gameState.players.length) {
             const nextPlayer = gameState.players[gameState.currentPlayerIndex];
             const nextUserData = getUserById(nextPlayer.id);
             
-            // Si el jugador está conectado y no bloqueado por bloqueo de administrador o límite de puntaje
+            // Solo considerar jugadores conectados, no bloqueados y que no sean admin
             if (nextPlayer.isConnected && nextUserData && 
-                !nextUserData.isBlocked && !nextUserData.isLockedDueToScore) {
+                !nextUserData.isBlocked && !nextUserData.isLockedDueToScore && !nextUserData.isAdmin) {
                 nextPlayerFound = true;
             } else {
-                // Si no, pasar al siguiente
                 gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % gameState.players.length;
                 loopCount++;
             }
         }
         
-        // Si hemos recorrido todos los jugadores y ninguno está disponible
+        // Si no encontramos un jugador válido, mantener el índice original
         if (!nextPlayerFound) {
-            console.log("No hay jugadores conectados y no bloqueados disponibles");
+            console.log("No hay jugadores elegibles para el siguiente turno");
+            gameState.currentPlayerIndex = originalIndex;
+            // Intentar nuevamente en unos segundos
+            setTimeout(() => {
+                startPlayerTurn();
+            }, 5000);
             return;
         }
         
-        // Establecer el jugador actual
         gameState.currentPlayer = gameState.players[gameState.currentPlayerIndex];
         console.log(`Turno de ${gameState.currentPlayer.username}, tiene 4 segundos`);
         
-        // Establecer temporizador
         clearTimeout(turnTimer);
         turnTimer = setTimeout(() => {
             console.log(`Tiempo agotado para ${gameState.currentPlayer.username}`);
@@ -628,21 +645,15 @@ function startPlayerTurn() {
         }, 4000);
     }
 
-    // Obtener selecciones del jugador actual
     const playerSelections = initPlayerSelections(gameState.currentPlayer.id);
-    
-    // Usar selecciones específicas del jugador
     gameState.rowSelections = [...playerSelections.rowSelections];
-
-    // Forzar estado 'playing'
     gameState.status = 'playing';
     gameState.turnStartTime = Date.now();
 
-    // Emitir el estado actualizado del juego
     io.emit('gameState', {
         board: gameState.board.map(tile => ({
             ...tile,
-            value: tile.revealed ? tile.value : null // Solo enviamos el valor si ya fue revelado
+            value: tile.revealed ? tile.value : null
         })),
         currentPlayer: gameState.currentPlayer,
         players: gameState.players.map(player => ({
@@ -657,7 +668,6 @@ function startPlayerTurn() {
         rowSelections: gameState.rowSelections
     });
 
-    // Log para confirmar el estado final
     console.log(`Fin de startPlayerTurn: estado=${gameState.status}, jugador actual=${gameState.currentPlayer?.username}`);
 }
   
@@ -693,6 +703,12 @@ io.on('connection', (socket) => {
                     isConnected: true,
                     username
                 });
+            }
+            
+            // Si no hay jugador actual o el jugador actual está desconectado, 
+            // considerar iniciar un nuevo turno
+            if (!gameState.currentPlayer || !gameState.currentPlayer.isConnected) {
+                startPlayerTurn();
             }
         }
     });
@@ -766,6 +782,13 @@ io.on('connection', (socket) => {
                 message: 'Has alcanzado 23,000 puntos exactos y has sido bloqueado temporalmente.'
             });
         }
+
+        // Enviar estado actual de bloqueo
+        socket.emit('blockStatusChanged', {
+            isBlocked: user.isBlocked,
+            isLockedDueToScore: user.isLockedDueToScore,
+            message: 'Sincronizando estado del juego'
+        });
     });
 
     // Guardar estado del juego al cerrar sesión
@@ -782,6 +805,7 @@ io.on('connection', (socket) => {
                 value: tile.revealed ? tile.value : null
             })),
             score: user.score,
+            prevScore: user.prevScore,
             rowSelections: gameState.playerSelections[userId]?.rowSelections || [0, 0, 0, 0],
             tablesPlayed: playerTableCount[userId] || 0,
             timestamp: Date.now()
@@ -862,12 +886,13 @@ io.on('connection', (socket) => {
             gameState.status = 'playing';
 
             // Si no hay jugador actual, establecer este jugador como el actual
-            if (!gameState.currentPlayer) {
+            // (solo si no es admin y no está bloqueado)
+            if (!gameState.currentPlayer && !user.isAdmin && !user.isBlocked && !user.isLockedDueToScore) {
                 gameState.currentPlayer = gameState.players[gameState.players.length - 1];
                 gameState.currentPlayerIndex = gameState.players.length - 1;
             }
 
-            // IMPORTANTE: Forzar una llamada directa a startPlayerTurn sin condiciones
+            // Iniciar turno (saltará a los jugadores no elegibles)
             startPlayerTurn();
 
             // Validar explícitamente que el estado sea 'playing' después de startPlayerTurn
@@ -933,6 +958,12 @@ io.on('connection', (socket) => {
                     username: user.username
                 });
                 console.log(`Usuario ${user.username} reconectado al juego`);
+
+                // Si no hay jugador actual o el jugador actual está desconectado,
+                // reiniciar los turnos
+                if (!gameState.currentPlayer || !gameState.currentPlayer.isConnected) {
+                    startPlayerTurn();
+                }
             }
 
             // Asegurarse de que el juego esté en estado 'playing' y haya un jugador actual
@@ -942,8 +973,6 @@ io.on('connection', (socket) => {
             }
 
             if (!gameState.currentPlayer && gameState.players.length > 0) {
-                gameState.currentPlayer = gameState.players[0];
-                gameState.currentPlayerIndex = 0;
                 startPlayerTurn(); // Asegurar que haya un turno activo
             }
 
@@ -985,6 +1014,13 @@ io.on('connection', (socket) => {
             return;
         }
         
+        // No permitir que los administradores jueguen
+        if (user.isAdmin) {
+            console.log(`El administrador ${user.username} intentó jugar, solo puede observar`);
+            socket.emit('message', 'Los administradores solo pueden observar el juego');
+            return;
+        }
+        
         // Permitir que usuarios bloqueados vean el tablero pero no seleccionen fichas
         if (user.isBlocked) {
             console.log(`Usuario ${user.username} bloqueado, no puede seleccionar fichas`);
@@ -1005,15 +1041,14 @@ io.on('connection', (socket) => {
         if (checkTableLimit(userId)) {
             console.log(`Usuario ${user.username} ha alcanzado el límite diario de mesas`);
             socket.emit('tableLimitReached', {
-                message: 'Has alcanzado el límite diario de mesas.',
-                unlockTime: `${UNLOCK_HOUR}:00 AM`
+                message: 'Has alcanzado el límite diario de mesas.'
             });
             return;
         }
         
         // Permitir seleccionar si es el único jugador o si es su turno
-        if (gameState.players.length > 1 && gameState.currentPlayer.id !== userId) {
-            console.log(`No es el turno de ${user.username}, es el turno de ${gameState.currentPlayer.username}`);
+        if (gameState.players.length > 1 && gameState.currentPlayer && gameState.currentPlayer.id !== userId) {
+            console.log(`No es el turno de ${user.username}, es el turno de ${gameState.currentPlayer?.username}`);
             return;
         }
         
@@ -1081,6 +1116,7 @@ io.on('connection', (socket) => {
         
         // Actualizar puntuación con el valor correcto
         const oldScore = user.score;
+        user.prevScore = user.score; // Guardar la puntuación anterior
         user.score += tileValue; // Sumar exactamente el valor de la ficha
         const newScore = user.score;
         
@@ -1103,11 +1139,22 @@ io.on('connection', (socket) => {
         
         socket.emit('forceScoreUpdate', newScore);
         
-        // Verificar si debería ser bloqueado por alcanzar 23,000 puntos
+        // Verificar si debe ser bloqueado (ahora incluye caer desde 60,000 a 23,000)
         if (checkScoreLimit(user)) {
             socket.emit('scoreLimitReached', {
-                message: 'Has alcanzado 23,000 puntos exactos y has sido bloqueado temporalmente.'
+                message: 'Has alcanzado o caído a 23,000 puntos y has sido bloqueado temporalmente.'
             });
+            socket.emit('blockStatusChanged', {
+                isLockedDueToScore: true,
+                message: 'Has alcanzado o caído a 23,000 puntos y has sido bloqueado temporalmente.'
+            });
+            
+            // Si era el jugador actual, pasar al siguiente
+            if (gameState.currentPlayer && gameState.currentPlayer.id === userId) {
+                setTimeout(() => {
+                    startPlayerTurn();
+                }, 1000);
+            }
         }
         
         // Guardar estado después de cada selección
@@ -1135,7 +1182,10 @@ io.on('connection', (socket) => {
             
             // Incrementar contador de mesas para todos los jugadores activos
             gameState.players.forEach(player => {
-                if (player.isConnected && !getUserById(player.id).isBlocked) {
+                if (player.isConnected && 
+                    !getUserById(player.id)?.isBlocked && 
+                    !getUserById(player.id)?.isLockedDueToScore && 
+                    !getUserById(player.id)?.isAdmin) {
                     incrementTableCount(player.id);
                 }
             });
@@ -1194,6 +1244,7 @@ io.on('connection', (socket) => {
 
         // Incrementar puntuación en 6,000
         targetUser.score += 6000;
+        targetUser.prevScore = targetUser.score;
         
         // Desbloquear al usuario
         targetUser.isBlocked = false;
@@ -1203,12 +1254,34 @@ io.on('connection', (socket) => {
         if (playerSocketId) {
             io.to(playerSocketId).emit('forceScoreUpdate', targetUser.score);
             io.to(playerSocketId).emit('message', 'Un administrador ha recargado 6,000 puntos a tu cuenta');
+            io.to(playerSocketId).emit('blockStatusChanged', {
+                isBlocked: false,
+                message: 'Un administrador ha recargado puntos a tu cuenta.'
+            });
         }
         
         // Guardar estado
         saveGameState();
 
         callback({ success: true });
+    });
+
+    // Evento para reiniciar los contadores de mesas (solo para admin)
+    socket.on('adminResetTables', (callback) => {
+        const adminId = connectedSockets[socket.id];
+        if (!adminId) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
+
+        const admin = getUserById(adminId);
+        if (!admin || !admin.isAdmin) {
+            callback({ success: false, message: 'No autorizado' });
+            return;
+        }
+
+        adminResetTableCounters();
+        callback({ success: true, message: 'Contadores de mesas reiniciados correctamente' });
     });
 
     // Obtener lista de jugadores (solo para admins)
@@ -1308,11 +1381,26 @@ io.on('connection', (socket) => {
         const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
         if (playerSocketId) {
             if (targetUser.isBlocked) {
-                // No desconectar al usuario, solo enviar un mensaje
+                io.to(playerSocketId).emit('blockStatusChanged', { 
+                    isBlocked: true,
+                    message: 'Tu cuenta ha sido bloqueada por el administrador. Puedes seguir viendo el juego pero no jugar.' 
+                });
                 io.to(playerSocketId).emit('message', 'Tu cuenta ha sido bloqueada por el administrador. Puedes seguir viendo el juego pero no jugar.');
             } else {
+                io.to(playerSocketId).emit('blockStatusChanged', { 
+                    isBlocked: false,
+                    message: 'Tu cuenta ha sido desbloqueada por el administrador.' 
+                });
                 io.to(playerSocketId).emit('message', 'Tu cuenta ha sido desbloqueada por el administrador.');
             }
+        }
+
+        // Si el jugador bloqueado era el jugador actual, pasar al siguiente
+        if (targetUser.isBlocked && gameState.currentPlayer && gameState.currentPlayer.id === userId) {
+            clearTimeout(turnTimer);
+            setTimeout(() => {
+                startPlayerTurn();
+            }, 500);
         }
 
         // Actualizar lista de jugadores para todos los admins
@@ -1372,11 +1460,15 @@ io.on('connection', (socket) => {
         // Desbloquear al usuario
         targetUser.isLockedDueToScore = false;
         
-        // Notificar al usuario
+        // Notificar al usuario en tiempo real
         const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
         if (playerSocketId) {
+            io.to(playerSocketId).emit('blockStatusChanged', { 
+                isLockedDueToScore: false,
+                message: 'Un administrador ha desbloqueado tu cuenta por puntaje.' 
+            });
             io.to(playerSocketId).emit('userUnlocked', { 
-                message: 'Un administrador ha desbloqueado tu cuenta.'
+                message: 'Un administrador ha desbloqueado tu cuenta por puntaje.'
             });
         }
         
@@ -1425,7 +1517,11 @@ io.on('connection', (socket) => {
         }
 
         // Establecer puntuación directamente
+        targetUser.prevScore = targetUser.score;
         targetUser.score = parseInt(newPoints, 10);
+        
+        // Verificar si debe ser bloqueado
+        checkScoreLimit(targetUser);
         
         // Guardar estado después de actualizar puntos
         saveGameState();
@@ -1434,6 +1530,14 @@ io.on('connection', (socket) => {
         const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
         if (playerSocketId) {
             io.to(playerSocketId).emit('forceScoreUpdate', targetUser.score);
+            
+            // Notificar si quedó bloqueado por puntaje
+            if (targetUser.isLockedDueToScore) {
+                io.to(playerSocketId).emit('blockStatusChanged', {
+                    isLockedDueToScore: true,
+                    message: 'Has alcanzado 23,000 puntos exactos y has sido bloqueado temporalmente.'
+                });
+            }
         }
 
         // Actualizar lista de jugadores para todos los admins
@@ -1477,6 +1581,7 @@ io.on('connection', (socket) => {
             io.to(playerSocketId).emit('tablesUnlocked');
             io.to(playerSocketId).emit('tablesUpdate', {
                 tablesPlayed: 0,
+                currentTable: globalTableNumber,
                 maxReached: false,
                 lockReason: ''
             });
