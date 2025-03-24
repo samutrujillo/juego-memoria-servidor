@@ -51,16 +51,16 @@ const io = new Server(server, {
   
 // Datos de usuario (en una aplicación real, esto estaría en una base de datos)
 const users = [
-    { id: '1', username: 'jugador1', password: 'clave1', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '2', username: 'jugador2', password: 'clave2', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '3', username: 'jugador3', password: 'clave3', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '4', username: 'jugador4', password: 'clave4', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '5', username: 'jugador5', password: 'clave5', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '6', username: 'jugador6', password: 'clave6', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '7', username: 'jugador7', password: 'clave7', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '8', username: 'jugador8', password: 'clave8', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '9', username: 'jugador9', password: 'clave9', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
-    { id: '10', username: 'jugador10', password: 'clave10', score: 6000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '1', username: 'jugador1', password: 'clave1', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '2', username: 'jugador2', password: 'clave2', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '3', username: 'jugador3', password: 'clave3', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '4', username: 'jugador4', password: 'clave4', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '5', username: 'jugador5', password: 'clave5', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '6', username: 'jugador6', password: 'clave6', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '7', username: 'jugador7', password: 'clave7', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '8', username: 'jugador8', password: 'clave8', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '9', username: 'jugador9', password: 'clave9', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
+    { id: '10', username: 'jugador10', password: 'clave10', score: 60000, isAdmin: false, isBlocked: false, isLockedDueToScore: false },
     { id: 'admin', username: 'admin', password: 'admin1998', score: 6000, isAdmin: true, isBlocked: false, isLockedDueToScore: false }
 ];
   
