@@ -1,0 +1,65 @@
+:root {
+  --font-family: 'Arial', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  font-family: var(--font-family);
+  background-image: url('/images/fondo.jpeg');
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  background-color: #2d1b48; /* Color de respaldo si la imagen no carga */
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.app-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.app-title {
+  text-align: center;
+  margin-bottom: 20px;
+  color: white;
+  font-size: 2rem;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.logo-image {
+  max-width: 150px;
+  height: auto;
+  margin: 0 auto;
+  display: block;
+}
+
+.connection-status {
+  text-align: center;
+  padding: 8px;
+  margin-bottom: 20px;
+  border-radius: 8px;
+}
+
+.connected {
+  background-color: rgba(76, 175, 80, 0.2);
+  color: #4CAF50;
+}
+
+.disconnected {
+  background-color: rgba(244, 67, 54, 0.2);
+  color: #F44336;
+}

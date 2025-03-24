@@ -1,0 +1,78 @@
+.player-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 300px;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 10px;
+  box-sizing: border-box;
+}
+
+.player-item {
+  padding: 8px 12px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+}
+
+.player-item.active {
+  background-color: rgba(76, 175, 80, 0.2);
+  font-weight: bold;
+}
+
+.player-item.blocked {
+  color: #aaa;
+  text-decoration: line-through;
+}
+
+.blocked-badge {
+  background-color: #dc3545;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 0.8em;
+}
+
+.player-item.disconnected {
+  opacity: 0.6;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px dashed rgba(255, 255, 255, 0.3);
+}
+
+.disconnected-badge {
+  background-color: #ff9800;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 0.8em;
+  margin-left: 5px;
+}
+
+.no-players {
+  text-align: center;
+  padding: 10px;
+  color: #aaa;
+  font-style: italic;
+}
+
+@media (max-width: 480px) {
+  .player-list {
+    padding: 5px;
+  }
+  
+  .player-item {
+    padding: 6px 10px;
+    font-size: 0.9rem;
+  }
+  
+  .blocked-badge, .disconnected-badge {
+    font-size: 0.7em;
+    padding: 1px 4px;
+  }
+}

@@ -1,0 +1,277 @@
+.admin-button {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  background-color: #5e35b1;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  z-index: 100;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+  transition: background-color 0.2s;
+}
+
+.admin-button:hover {
+  background-color: #4527a0;
+}
+
+.admin-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.admin-modal {
+  background-color: #2d1b48;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 800px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  color: white;
+  overflow-y: auto;
+}
+
+.admin-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  position: sticky;
+  top: 0;
+  background-color: #2d1b48;
+  z-index: 10;
+}
+
+.admin-modal-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #aaa;
+  cursor: pointer;
+}
+
+.admin-modal-content {
+  padding: 20px;
+  overflow-y: auto;
+  max-height: calc(90vh - 60px);
+}
+
+.admin-status {
+  background-color: #4caf50;
+  color: white;
+  padding: 10px;
+  margin: 10px 20px;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.admin-loading {
+  text-align: center;
+  padding: 20px;
+  color: #ccc;
+}
+
+.admin-players-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.admin-player-item {
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.player-info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.player-name {
+  font-weight: bold;
+  font-size: 1.1rem;
+}
+
+.player-score {
+  color: #90caf9;
+}
+
+.player-status {
+  color: #4caf50;
+  font-size: 0.9rem;
+}
+
+.player-status.blocked {
+  color: #f44336;
+}
+
+.player-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.points-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.points-label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 0.9rem;
+  color: #ccc;
+}
+
+.points-input {
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background-color: #1a1a2e;
+  color: white;
+  width: 100%;
+}
+
+.points-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.add-points-btn,
+.remove-points-btn,
+.toggle-block-btn,
+.unlock-tables-btn {
+  padding: 8px 12px;
+  border-radius: 4px;
+  border: none;
+  color: white;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.add-points-btn:disabled,
+.remove-points-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.add-points-btn {
+  background-color: #4caf50;
+}
+
+.remove-points-btn {
+  background-color: #f44336;
+}
+
+.toggle-block-btn {
+  background-color: #ff9800;
+}
+
+.toggle-block-btn.unblock {
+  background-color: #2196f3;
+}
+
+.unlock-tables-btn {
+  background-color: #9c27b0;
+}
+
+.unlock-tables-btn:hover {
+  background-color: #7b1fa2;
+}
+
+.admin-actions {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
+}
+
+.reset-game-btn {
+  background-color: #9c27b0;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+/* Media queries para responsividad */
+@media (min-width: 768px) {
+  .admin-player-item {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .player-info {
+    flex-direction: row;
+    gap: 15px;
+    align-items: center;
+  }
+  
+  .player-controls {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .admin-modal {
+    width: 95%;
+    padding: 10px;
+  }
+  
+  .admin-player-item {
+    padding: 10px;
+  }
+  
+  .admin-modal-header {
+    padding: 10px;
+  }
+  
+  .admin-modal-header h2 {
+    font-size: 1.2rem;
+  }
+  
+  .points-buttons {
+    flex-direction: row;
+    width: 100%;
+  }
+  
+  .points-buttons button {
+    flex: 1;
+    font-size: 0.8rem;
+    padding: 6px;
+  }
+  
+  .toggle-block-btn,
+  .unlock-tables-btn {
+    font-size: 0.8rem;
+    padding: 6px;
+  }
+}
