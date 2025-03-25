@@ -1679,6 +1679,19 @@ io.on('connection', (socket) => {
             }
         }
     });
+
+    socket.on('completeBoard', ({ userId }) => {
+        const user = getUserById(userId);
+        if (!user) return;
+        
+        console.log(`Usuario ${user.username} completó su tablero, avanzando al siguiente`);
+        
+        // Incrementar contador de mesas
+        incrementTableCount(userId);
+        
+        // Reiniciar tablero y avanzar a la siguiente mesa
+        resetBoardOnly();
+      });
 });
 
 // Configurar guardado periódico cada 5 minutos
