@@ -15,6 +15,8 @@ const app = express();
 
 // Ruta para el archivo de estado del juego
 const GAME_STATE_FILE = path.join(__dirname, 'game-state.json');
+// Ruta para archivo de registro de errores
+const ERROR_LOG_FILE = path.join(__dirname, 'error-log.txt');
 
 // Añadir estas nuevas variables para el sistema de mesas
 const MAX_TABLES_PER_DAY = 10;
@@ -85,6 +87,32 @@ let gameState = {
 };
 
 let turnTimer = null;
+
+// Función para validar la integridad del tablero
+function validateBoardIntegrity() {
+    // Verificar que haya 8 fichas positivas y 8 negativas
+    let positiveCount = 0;
+    let negativeCount = 0;
+    
+    for (const tile of gameState.board) {
+        if (tile.value > 0) positiveCount++;
+        if (tile.value < 0) negativeCount++;
+    }
+    
+    if (positiveCount !== 8 || negativeCount !== 8) {
+        console.error(`ERROR DE INTEGRIDAD DEL TABLERO: ${positiveCount} positivas, ${negativeCount} negativas`);
+        // Regenerar el tablero para corregir
+        gameState.board = generateBoard();
+        // Guardar estado después de regenerar el tablero
+        saveGameState();
+        return false;
+    }
+    
+    return true;
+}
+
+// Ejecutar esta validación periódicamente
+setInterval(validateBoardIntegrity, 5 * 60 * 1000); // Cada 5 minutos
 
 // Función para verificar si un usuario debe ser bloqueado por puntos exactos
 // o por caer desde 60,000 a 23,000 o menos
@@ -208,10 +236,22 @@ function saveGameState() {
     };
 
     try {
-        fs.writeFileSync(GAME_STATE_FILE, JSON.stringify(stateToSave, null, 2));
+        // Primero guardar en un archivo temporal
+        const tempFile = GAME_STATE_FILE + '.tmp';
+        fs.writeFileSync(tempFile, JSON.stringify(stateToSave, null, 2));
+        
+        // Luego renombrar (esto es generalmente atómico en sistemas de archivos)
+        fs.renameSync(tempFile, GAME_STATE_FILE);
+        
         console.log('Estado del juego guardado correctamente');
     } catch (error) {
         console.error('Error al guardar el estado del juego:', error);
+        // Guardar el error en un archivo de log para diagnóstico
+        try {
+            fs.appendFileSync(ERROR_LOG_FILE, `${new Date().toISOString()} - Error guardando estado: ${error.message}\n`);
+        } catch (logError) {
+            console.error('Error adicional al escribir en archivo de log:', logError);
+        }
     }
 }
 
@@ -219,11 +259,20 @@ function saveGameState() {
 function loadGameState() {
     try {
         if (fs.existsSync(GAME_STATE_FILE)) {
-            const savedState = JSON.parse(fs.readFileSync(GAME_STATE_FILE, 'utf8'));
-
-            // Restaurar el tablero
-            if (savedState.board && savedState.board.length > 0) {
+            const fileContent = fs.readFileSync(GAME_STATE_FILE, 'utf8');
+            if (!fileContent || fileContent.trim() === '') {
+                throw new Error('Archivo de estado vacío');
+            }
+            
+            const savedState = JSON.parse(fileContent);
+            
+            // Restaurar el tablero con verificación estricta
+            if (savedState.board && savedState.board.length === 16) {
                 gameState.board = savedState.board;
+                console.log('Tablero restaurado correctamente desde estado guardado');
+            } else {
+                console.warn('Estado del tablero incompleto o inválido, generando uno nuevo');
+                gameState.board = generateBoard();
             }
 
             // Restaurar contador de mesas y fecha de último reinicio
@@ -283,21 +332,34 @@ function loadGameState() {
                 }));
             }
 
+            // Verificar integridad del tablero después de cargar
+            validateBoardIntegrity();
+            
             console.log(`Estado del juego cargado correctamente. Mesa global actual: ${globalTableNumber}`);
             return true;
         }
     } catch (error) {
         console.error('Error al cargar el estado del juego:', error);
+        // Guardar el error en un archivo de log para diagnóstico
+        try {
+            fs.appendFileSync(ERROR_LOG_FILE, `${new Date().toISOString()} - Error cargando estado: ${error.message}\n`);
+        } catch (logError) {
+            console.error('Error adicional al escribir en archivo de log:', logError);
+        }
+        
+        // En caso de error, iniciar con un tablero nuevo pero mantener el resto del estado
+        console.log('Generando tablero nuevo después de error de carga');
+        gameState.board = generateBoard();
     }
 
-    // Si no hay datos guardados, iniciar desde la mesa 1
+    // Si no hay datos guardados o hubo un error, iniciar desde la mesa 1
     globalTableNumber = 1;
     return false;
 }
 
 // Intentar cargar el estado guardado
 if (!loadGameState()) {
-    console.log('No se encontró estado guardado, usando valores predeterminados');
+    console.log('No se encontró estado guardado o hubo un error al cargarlo, usando valores predeterminados');
 }
 
 // Generar el tablero con distribución aleatoria de fichas ganadoras y perdedoras en cada hilera
@@ -307,7 +369,7 @@ function generateBoard() {
     // Para cada hilera (4 hileras en total, con 4 fichas cada una)
     for (let row = 0; row < 4; row++) {
         const rowTiles = [];
-
+        
         // Crear 2 fichas ganadoras y 2 perdedoras para esta hilera
         for (let i = 0; i < 2; i++) {
             rowTiles.push({ value: 15000, revealed: false });  // Ganadora
@@ -722,7 +784,7 @@ function startPlayerTurn() {
         rowSelections: gameState.rowSelections
     });
 
-    // Guardar el estado después de cambiar de turno
+    // Guardar estado después de cambiar de turno
     saveGameState();
 
     console.log(`Fin de startPlayerTurn: estado=${gameState.status}, jugador actual=${gameState.currentPlayer?.username}`);
@@ -1131,6 +1193,7 @@ io.on('connection', (socket) => {
         // VERIFICACIÓN CRÍTICA: Asegurarse de que no se pueda seleccionar la misma ficha dos veces
         if (gameState.board[tileIndex].revealed) {
             console.log(`IGNORANDO selección repetida para ficha ${tileIndex}`);
+            socket.emit('tileSelectError', { message: 'Esta ficha ya fue seleccionada' });
             return;
         }
 
@@ -1165,9 +1228,13 @@ io.on('connection', (socket) => {
 
         console.log(`Fichas seleccionadas en hilera ${row + 1}: ${playerSelections.rowSelections[row]}/2`);
 
-        // Revelar la ficha
+        // Marcar explícitamente la ficha como revelada ANTES de emitir el evento
         gameState.board[tileIndex].revealed = true;
         gameState.board[tileIndex].selectedBy = user.username;
+        gameState.board[tileIndex].selectedAt = Date.now(); // Añadir timestamp
+
+        // Guardar estado INMEDIATAMENTE después de la selección
+        saveGameState();
 
         // Acceder al valor real de la ficha en el tablero del servidor
         const tileValue = gameState.board[tileIndex].value;
@@ -1197,10 +1264,14 @@ io.on('connection', (socket) => {
             newScore: newScore,
             rowSelections: playerSelections.rowSelections,
             soundType: soundType,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            isRevealed: true // Confirmar explícitamente que está revelada
         });
 
         socket.emit('forceScoreUpdate', newScore);
+
+        // Guardar estado NUEVAMENTE después de emitir
+        saveGameState();
 
         // Verificar si debe ser bloqueado (ahora incluye caer desde 60,000 a 23,000)
         if (checkScoreLimit(user)) {
@@ -1219,9 +1290,6 @@ io.on('connection', (socket) => {
                 }, 1000);
             }
         }
-
-        // Guardar estado después de cada selección
-        saveGameState();
 
         // Verificar si el jugador completó todas sus selecciones permitidas
         const allRowsFull = playerSelections.rowSelections.every(count => count >= 2);
