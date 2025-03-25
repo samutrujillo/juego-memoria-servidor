@@ -18,10 +18,13 @@ const GAME_STATE_FILE = path.join(__dirname, 'game-state.json');
 
 // Añadir estas nuevas variables para el sistema de mesas
 const MAX_TABLES_PER_DAY = 10;
-const UNLOCK_HOUR = 6; // 6 AM (ya no se usará para reseteo automático)
 const playerGameState = {}; // Para guardar el estado de juego de cada jugador
 const playerTableCount = {}; // Contar mesas jugadas por cada jugador
 let globalTableNumber = 1; // Mesa global que todos los jugadores verán
+
+// Variables para optimización
+const playerInactivityTimeouts = {};
+const INACTIVITY_THRESHOLD = 60 * 60 * 1000; // 1 hora
 
 // Configuración de CORS actualizada para permitir múltiples orígenes
 const corsOptions = {
@@ -94,15 +97,42 @@ function checkScoreLimit(user) {
     return false;
 }
 
-// Esta función ya no realiza un reseteo automático
+// Esta función ahora solo hace monitoreo
 function checkAndResetTableCounters() {
-    // Esta función ya no hace ningún reinicio automático
-    // Solo se mantiene para posible uso futuro o para eventos programados específicos
-    console.log("Verificación programada de contadores de mesa (no se realiza reinicio automático)");
+    // No realiza ningún reinicio automático, solo monitoreo
+    console.log("Verificación de monitoreo - No se realiza reinicio automático");
+    
+    // Opcional: Log para verificar la cantidad de mesas por jugador
+    for (const userId in playerTableCount) {
+        const user = getUserById(userId);
+        if (user) {
+            console.log(`${user.username}: ${playerTableCount[userId]} mesas jugadas`);
+        }
+    }
 }
 
-// Mantener la verificación periódica por posibles usos futuros
-setInterval(checkAndResetTableCounters, 60 * 60 * 1000); // Cada hora en vez de cada minuto
+// Función para limpiar datos de jugadores inactivos (optimización)
+function cleanupInactivePlayersData() {
+    const currentTime = Date.now();
+    let cleanedCount = 0;
+    
+    // Limpiar datos de jugadores que llevan inactivos más de 1 hora
+    for (const userId in playerGameState) {
+        if (playerGameState[userId].timestamp && 
+            (currentTime - playerGameState[userId].timestamp) > INACTIVITY_THRESHOLD) {
+            delete playerGameState[userId];
+            cleanedCount++;
+        }
+    }
+    
+    if (cleanedCount > 0) {
+        console.log(`Limpieza de memoria: ${cleanedCount} jugadores inactivos eliminados`);
+    }
+}
+
+// Mantener la verificación periódica pero ahora sin reinicio automático
+setInterval(checkAndResetTableCounters, 60 * 60 * 1000); // Cada hora
+setInterval(cleanupInactivePlayersData, 30 * 60 * 1000); // Cada 30 minutos
 
 // Función para reinicio manual por admin
 function adminResetTableCounters() {
@@ -1125,7 +1155,7 @@ io.on('connection', (socket) => {
         // Añadir información de tipo de sonido correcta
         const soundType = tileValue > 0 ? 'win' : 'lose';
         
-        // Emitir eventos con el valor correcto
+        // Emitir eventos con el valor correcto pero SIN mostrar notificaciones de puntos
         io.emit('tileSelected', {
             tileIndex,
             tileValue, // Este valor debe ser correcto desde el servidor
@@ -1694,8 +1724,33 @@ io.on('connection', (socket) => {
       });
 });
 
-// Configurar guardado periódico cada 5 minutos
+// Configurar guardado periódico optimizado - cada 5 minutos
 setInterval(saveGameState, 5 * 60 * 1000);
+
+// Limpieza de memoria en desuso - cada 30 minutos
+setInterval(() => {
+    // Limpiar datos de conexiones inactivas
+    let disconnectedCount = 0;
+    
+    // Verificar y limpiar conexiones inactivas
+    for (const socketId in connectedSockets) {
+        const userId = connectedSockets[socketId];
+        const playerIndex = gameState.players.findIndex(player => player.id === userId);
+        
+        if (playerIndex !== -1 && !gameState.players[playerIndex].isConnected) {
+            // Si el jugador lleva más de 1 hora desconectado, eliminarlo de la lista
+            const lastActivity = playerGameState[userId]?.timestamp || 0;
+            if (Date.now() - lastActivity > 60 * 60 * 1000) {
+                delete connectedSockets[socketId];
+                disconnectedCount++;
+            }
+        }
+    }
+    
+    if (disconnectedCount > 0) {
+        console.log(`Limpieza periódica: ${disconnectedCount} conexiones inactivas eliminadas`);
+    }
+}, 30 * 60 * 1000);
 
 // Endpoint para verificar la configuración de CORS (para depuración)
 app.get('/cors-config', (req, res) => {
