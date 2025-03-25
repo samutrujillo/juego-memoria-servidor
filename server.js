@@ -134,6 +134,9 @@ function cleanupInactivePlayersData() {
 setInterval(checkAndResetTableCounters, 60 * 60 * 1000); // Cada hora
 setInterval(cleanupInactivePlayersData, 30 * 60 * 1000); // Cada 30 minutos
 
+// Aumentar frecuencia de guardado automático
+setInterval(saveGameState, 60 * 1000); // Guardar cada minuto en vez de cada 5 minutos
+
 // Función para reinicio manual por admin
 function adminResetTableCounters() {
     // Reiniciar contadores para todos los jugadores
@@ -298,6 +301,8 @@ function loadGameState() {
 // Intentar cargar el estado guardado
 if (!loadGameState()) {
     console.log('No se encontró estado guardado, usando valores predeterminados');
+    // Guardar el estado inicial para futuras referencias
+    saveGameState();
 }
 
 // Generar el tablero con distribución aleatoria de fichas ganadoras y perdedoras en cada hilera
@@ -394,6 +399,9 @@ function updateUserScore(id, points) {
                 });
             }
         }
+        
+        // Guardar estado inmediatamente después de actualizar puntuación
+        saveGameState();
         
         return user.score;
     }
@@ -698,6 +706,9 @@ function startPlayerTurn() {
         rowSelections: gameState.rowSelections
     });
 
+    // Guardar estado después de iniciar turno
+    saveGameState();
+
     console.log(`Fin de startPlayerTurn: estado=${gameState.status}, jugador actual=${gameState.currentPlayer?.username}`);
 }
   
@@ -710,6 +721,30 @@ io.on('connection', (socket) => {
         console.log(`Prueba recibida del cliente ${socket.id}:`, data);
         // Enviar respuesta al cliente
         socket.emit('testResponse', { message: 'Prueba exitosa' });
+    });
+
+    // Añadir nuevo evento para cuando un jugador completa sus selecciones sin cambiar de mesa
+    socket.on('playerCompletedSelections', ({ userId }) => {
+        const user = getUserById(userId);
+        if (!user) return;
+        
+        console.log(`Usuario ${user.username} completó sus selecciones, esperando más jugadores`);
+        
+        // Actualizar estado en el objeto playerGameState
+        playerGameState[userId] = {
+            ...playerGameState[userId] || {},
+            hasCompletedSelections: true,
+            timestamp: Date.now()
+        };
+        
+        // Notificar al jugador
+        const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
+        if (playerSocketId) {
+            io.to(playerSocketId).emit('message', 'Has completado tus selecciones. Esperando a más jugadores para cambiar de mesa.');
+        }
+        
+        // Guardar el estado inmediatamente para mayor persistencia
+        saveGameState();
     });
 
     // Reconexión de usuario
@@ -741,6 +776,9 @@ io.on('connection', (socket) => {
                 startPlayerTurn();
             }
         }
+        
+        // Guardar estado después de reconexión
+        saveGameState();
     });
 
     // Sincronización completa del estado del juego
@@ -1023,7 +1061,37 @@ io.on('connection', (socket) => {
                 status: 'playing',  // Forzar estado 'playing' explícitamente aquí también
                 rowSelections: gameState.playerSelections[userId]?.rowSelections || [0, 0, 0, 0]
             });
+            
+            // Guardar estado después de reconexión
+            saveGameState();
         }
+    });
+
+    // Modificar el evento completeBoard para verificar si hay suficientes jugadores
+    socket.on('completeBoard', ({ userId }) => {
+        const user = getUserById(userId);
+        if (!user) return;
+        
+        // Solo proceder si hay múltiples jugadores activos
+        const activePlayerCount = gameState.players.filter(p => p.isConnected && 
+            !getUserById(p.id)?.isBlocked && 
+            !getUserById(p.id)?.isLockedDueToScore && 
+            !getUserById(p.id)?.isAdmin).length;
+        
+        if (activePlayerCount > 1) {
+            console.log(`Suficientes jugadores activos (${activePlayerCount}), avanzando al siguiente tablero`);
+            incrementTableCount(userId);
+            resetBoardOnly();
+        } else {
+            console.log(`No hay suficientes jugadores activos (${activePlayerCount}), esperando`);
+            socket.emit('message', 'Esperando a más jugadores para cambiar de mesa.');
+            
+            // Notificar que completó sus selecciones pero no cambiar mesa
+            socket.emit('playerCompletedSelections', { userId });
+        }
+        
+        // Guardar estado después del intento de completar tablero
+        saveGameState();
     });
 
     // Seleccionar una ficha
@@ -1155,7 +1223,7 @@ io.on('connection', (socket) => {
         // Añadir información de tipo de sonido correcta
         const soundType = tileValue > 0 ? 'win' : 'lose';
         
-        // Emitir eventos con el valor correcto pero SIN mostrar notificaciones de puntos
+        // Emitir eventos con el valor correcto pero SIN mostrar notificaciones de puntos de otros jugadores
         io.emit('tileSelected', {
             tileIndex,
             tileValue, // Este valor debe ser correcto desde el servidor
@@ -1193,43 +1261,38 @@ io.on('connection', (socket) => {
         // Verificar si el jugador completó todas sus selecciones permitidas
         const allRowsFull = playerSelections.rowSelections.every(count => count >= 2);
         
-        // Si es el único jugador y ha seleccionado sus 8 fichas, avanzar al siguiente tablero
-        if (gameState.players.length === 1 && allRowsFull) {
-            console.log(`Único jugador ${user.username} completó sus 8 fichas, avanzando al siguiente tablero`);
-            
-            // Incrementar contador de mesas
-            incrementTableCount(userId);
-            
-            // Reiniciar tablero y avanzar a la siguiente mesa
-            resetBoardOnly();
-            
-            return; // Terminar aquí para evitar la lógica de verificar si todas las fichas están reveladas
-        }
+        // Verificar si hay múltiples jugadores activos (no bloqueados, no admin)
+        const activePlayerCount = gameState.players.filter(p => 
+            p.isConnected && 
+            !getUserById(p.id)?.isBlocked && 
+            !getUserById(p.id)?.isLockedDueToScore && 
+            !getUserById(p.id)?.isAdmin
+        ).length;
         
-        // Para múltiples jugadores, verificar si se revelaron todas las fichas
-        if (gameState.players.length > 1 && checkGameOver()) {
-            console.log("Todas las fichas han sido reveladas. Reiniciando tablero pero manteniendo puntuaciones");
-            
-            // Incrementar contador de mesas para todos los jugadores activos
-            gameState.players.forEach(player => {
-                if (player.isConnected && 
-                    !getUserById(player.id)?.isBlocked && 
-                    !getUserById(player.id)?.isLockedDueToScore && 
-                    !getUserById(player.id)?.isAdmin) {
-                    incrementTableCount(player.id);
-                }
-            });
-            
-            // Reiniciar solo el tablero
-            resetBoardOnly();
-            
-            return;
-        }
-        
-        // Si el jugador ya seleccionó sus 8 fichas, pasar al siguiente
+        // Si el jugador completó sus selecciones y hay múltiples jugadores activos, revisar si el tablero está completo
         if (allRowsFull) {
-            console.log(`${user.username} ha seleccionado todas sus fichas permitidas, pasando al siguiente jugador`);
-            socket.emit('message', 'Has seleccionado todas tus fichas permitidas, pasando al siguiente jugador');
+            if (activePlayerCount > 1 && checkGameOver()) {
+                console.log("Tablero completado con múltiples jugadores activos. Avanzando al siguiente tablero.");
+                
+                // Incrementar contador de mesas para todos los jugadores activos
+                gameState.players.forEach(player => {
+                    if (player.isConnected && 
+                        !getUserById(player.id)?.isBlocked && 
+                        !getUserById(player.id)?.isLockedDueToScore && 
+                        !getUserById(player.id)?.isAdmin) {
+                        incrementTableCount(player.id);
+                    }
+                });
+                
+                // Reiniciar solo el tablero
+                resetBoardOnly();
+                
+                return;
+            } else {
+                console.log(`${user.username} ha completado sus selecciones, pero no se avanza al siguiente tablero aún`);
+                socket.emit('playerCompletedSelections', { userId });
+                socket.emit('message', 'Has completado tus selecciones. Esperando a más jugadores para cambiar de mesa.');
+            }
             
             // Pasar al siguiente jugador
             clearTimeout(turnTimer);
@@ -1239,7 +1302,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Agregar este nuevo manejador para sincronización forzada
+    // Evento para sincronización forzada
     socket.on('syncScore', ({ userId }) => {
         console.log(`Solicitada sincronización de puntaje para: ${userId}`);
         const user = getUserById(userId);
@@ -1672,7 +1735,7 @@ io.on('connection', (socket) => {
                 rowSelections: gameState.rowSelections
             });
             
-            // Guardar estado después de salir del juego
+            // Guardar estado inmediatamente después de salir del juego
             saveGameState();
         }
     });
@@ -1706,26 +1769,13 @@ io.on('connection', (socket) => {
                     isConnected: false,
                     username: gameState.players[playerIndex].username
                 });
+                
+                // Guardar estado inmediatamente después de la desconexión
+                saveGameState();
             }
         }
     });
-
-    socket.on('completeBoard', ({ userId }) => {
-        const user = getUserById(userId);
-        if (!user) return;
-        
-        console.log(`Usuario ${user.username} completó su tablero, avanzando al siguiente`);
-        
-        // Incrementar contador de mesas
-        incrementTableCount(userId);
-        
-        // Reiniciar tablero y avanzar a la siguiente mesa
-        resetBoardOnly();
-      });
 });
-
-// Configurar guardado periódico optimizado - cada 5 minutos
-setInterval(saveGameState, 5 * 60 * 1000);
 
 // Limpieza de memoria en desuso - cada 30 minutos
 setInterval(() => {
@@ -1749,6 +1799,8 @@ setInterval(() => {
     
     if (disconnectedCount > 0) {
         console.log(`Limpieza periódica: ${disconnectedCount} conexiones inactivas eliminadas`);
+        // Guardar estado después de la limpieza
+        saveGameState();
     }
 }, 30 * 60 * 1000);
 
