@@ -10,6 +10,39 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
+const admin = require('firebase-admin');
+
+// Inicializar Firebase Admin (asegúrate de tener el archivo de credenciales)
+// Si estás en producción, puedes usar variables de entorno para las credenciales
+let serviceAccount;
+try {
+    // Intentar cargar archivo de credenciales
+    serviceAccount = require('./firebase-credentials.json');
+} catch (error) {
+    // Si no existe, crear desde variables de entorno
+    if (process.env.FIREBASE_CREDENTIALS) {
+        try {
+            serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+        } catch (parseError) {
+            console.error('Error al parsear credenciales de Firebase:', parseError);
+        }
+    } else {
+        console.error('No se encontró el archivo de credenciales de Firebase ni la variable de entorno');
+    }
+}
+
+// Inicializar Firebase solo si tenemos credenciales
+let db = null;
+if (serviceAccount) {
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        databaseURL: process.env.FIREBASE_DATABASE_URL || "https://tu-proyecto-firebase.firebaseio.com"
+    });
+    db = admin.database();
+    console.log('Firebase inicializado correctamente');
+} else {
+    console.warn('No se pudo inicializar Firebase, se usará solo almacenamiento local');
+}
 
 const app = express();
 
@@ -28,6 +61,10 @@ let globalTableNumber = 1; // Mesa global que todos los jugadores verán
 // Variables para optimización
 const playerInactivityTimeouts = {};
 const INACTIVITY_THRESHOLD = 60 * 60 * 1000; // 1 hora
+
+// Variables para control de guardado diferencial en Firebase
+let pendingChanges = {};
+let saveTimeout = null;
 
 // Configuración de CORS actualizada para permitir múltiples orígenes
 const corsOptions = {
@@ -89,6 +126,26 @@ let gameState = {
 
 let turnTimer = null;
 
+// Función para encolar cambios para guardado diferencial
+function queueGameStateChange(path, value) {
+    if (!db) return; // Si no está disponible Firebase, no hacer nada
+    
+    pendingChanges[path] = value;
+    
+    if (!saveTimeout) {
+        saveTimeout = setTimeout(() => {
+            const updates = {...pendingChanges};
+            pendingChanges = {};
+            saveTimeout = null;
+            
+            // Guardar cambios acumulados
+            db.ref().update(updates)
+                .then(() => console.log('Cambios incrementales guardados en Firebase'))
+                .catch(error => console.error('Error al guardar cambios incrementales:', error));
+        }, 1000); // Guardar después de 1 segundo de inactividad
+    }
+}
+
 // Función para validar la integridad del tablero
 function validateBoardIntegrity() {
     // Verificar que haya 8 fichas positivas y 8 negativas
@@ -133,6 +190,11 @@ function checkScoreLimit(user) {
                 isLockedDueToScore: true,
                 message: 'Has alcanzado o caído a 23,000 puntos o menos. Tu cuenta ha sido bloqueada temporalmente.'
             });
+        }
+
+        // Actualizar en Firebase si está disponible
+        if (db) {
+            queueGameStateChange(`gameState/userScores/${user.id}/isLockedDueToScore`, true);
         }
 
         // Guardar estado después del bloqueo
@@ -193,6 +255,23 @@ function adminResetTableCounters() {
     // Notificar a todos los clientes
     io.emit('tablesUnlocked', { message: 'El administrador ha reiniciado los contadores de mesas.' });
 
+    // Actualizar en Firebase si está disponible
+    if (db) {
+        queueGameStateChange('gameState/lastTableResetDate', gameState.lastTableResetDate);
+        queueGameStateChange('gameState/tableCount', 0);
+        
+        const updates = {};
+        Object.keys(playerTableCount).forEach(userId => {
+            updates[`gameState/userScores/${userId}/tablesPlayed`] = 0;
+        });
+        
+        if (Object.keys(updates).length > 0) {
+            db.ref().update(updates).catch(error => 
+                console.error('Error al reiniciar contadores de mesa en Firebase:', error)
+            );
+        }
+    }
+
     console.log('Contadores de mesas reiniciados por administrador');
     saveGameState();
 }
@@ -215,14 +294,20 @@ function incrementTableCount(userId) {
     playerTableCount[userId]++;
     gameState.tableCount++;
 
+    // Actualizar en Firebase si está disponible
+    if (db) {
+        queueGameStateChange(`gameState/userScores/${userId}/tablesPlayed`, playerTableCount[userId]);
+        queueGameStateChange('gameState/tableCount', gameState.tableCount);
+    }
+
     // Guardar estado
     saveGameState();
 
     return playerTableCount[userId];
 }
 
-// Función mejorada para guardar el estado del juego con respaldos
-function saveGameState() {
+// Función mejorada para guardar el estado del juego con Firebase y respaldos locales
+async function saveGameState() {
     const stateToSave = {
         board: gameState.board,
         players: gameState.players.map(player => ({
@@ -253,7 +338,20 @@ function saveGameState() {
     };
 
     const jsonData = JSON.stringify(stateToSave, null, 2);
+    let savedSuccessfully = false;
 
+    // Intentar guardar en Firebase primero si está disponible
+    if (db) {
+        try {
+            await db.ref('gameState').set(stateToSave);
+            console.log('Estado del juego guardado correctamente en Firebase');
+            savedSuccessfully = true;
+        } catch (firebaseError) {
+            console.error('Error al guardar en Firebase, intentando respaldo local:', firebaseError);
+        }
+    }
+
+    // Siempre guardar en local como respaldo, incluso si Firebase tuvo éxito
     try {
         // Sistema de rotación de respaldos
         // 1. Si existe el archivo principal, copiarlo como backup1
@@ -278,20 +376,26 @@ function saveGameState() {
 
         // 3. Guardar el nuevo estado en el archivo principal
         fs.writeFileSync(GAME_STATE_FILE, jsonData);
-        console.log('Estado del juego guardado correctamente con respaldos');
+        console.log('Estado del juego guardado correctamente en archivos locales');
+        savedSuccessfully = true;
     } catch (error) {
-        console.error('Error al guardar el estado del juego:', error);
-        try {
-            // Intentar guardar directamente en los archivos de respaldo
-            fs.writeFileSync(GAME_STATE_BACKUP_1, jsonData);
-            console.log('Estado guardado en respaldo 1 tras error en archivo principal');
-        } catch (backup1Error) {
-            console.error('Error al guardar en respaldo 1:', backup1Error);
+        console.error('Error al guardar el estado del juego en archivos locales:', error);
+        
+        if (!savedSuccessfully) {
             try {
-                fs.writeFileSync(GAME_STATE_BACKUP_2, jsonData);
-                console.log('Estado guardado en respaldo 2 tras errores previos');
-            } catch (backup2Error) {
-                console.error('Error crítico: No se pudo guardar el estado en ninguna ubicación');
+                // Intentar guardar directamente en los archivos de respaldo
+                fs.writeFileSync(GAME_STATE_BACKUP_1, jsonData);
+                console.log('Estado guardado en respaldo 1 tras error en archivo principal');
+                savedSuccessfully = true;
+            } catch (backup1Error) {
+                console.error('Error al guardar en respaldo 1:', backup1Error);
+                try {
+                    fs.writeFileSync(GAME_STATE_BACKUP_2, jsonData);
+                    console.log('Estado guardado en respaldo 2 tras errores previos');
+                    savedSuccessfully = true;
+                } catch (backup2Error) {
+                    console.error('Error crítico: No se pudo guardar el estado en ninguna ubicación');
+                }
             }
         }
 
@@ -301,46 +405,75 @@ function saveGameState() {
             console.error('Error adicional al escribir en archivo de log');
         }
     }
+
+    return savedSuccessfully;
 }
 
-// Función mejorada para cargar el estado con múltiples respaldos
-function loadGameState() {
-    const fileOptions = [GAME_STATE_FILE, GAME_STATE_BACKUP_1, GAME_STATE_BACKUP_2];
+// Función mejorada para cargar el estado con Firebase y múltiples respaldos
+async function loadGameState() {
     let loadedState = null;
-    let loadedFile = null;
+    let loadedSource = null;
 
-    // Intentar cargar desde cada archivo en orden
-    for (const file of fileOptions) {
+    // 1. Intentar cargar desde Firebase primero
+    if (db) {
         try {
-            if (fs.existsSync(file)) {
-                const fileContent = fs.readFileSync(file, 'utf8');
-                if (fileContent && fileContent.trim() !== '') {
-                    const parsedState = JSON.parse(fileContent);
-
-                    // Verificar que el estado tenga la estructura mínima necesaria
-                    if (parsedState &&
-                        parsedState.board &&
-                        Array.isArray(parsedState.board) &&
-                        parsedState.board.length === 16) {
-                        loadedState = parsedState;
-                        loadedFile = file;
-                        console.log(`Estado cargado exitosamente desde: ${file}`);
-                        break; // Salir del bucle si se cargó correctamente
-                    } else {
-                        console.warn(`Archivo ${file} existe pero tiene estructura inválida`);
-                    }
-                } else {
-                    console.warn(`Archivo ${file} está vacío`);
-                }
+            console.log('Intentando cargar estado desde Firebase...');
+            const snapshot = await db.ref('gameState').once('value');
+            const firebaseState = snapshot.val();
+            
+            if (firebaseState && 
+                firebaseState.board && 
+                Array.isArray(firebaseState.board) && 
+                firebaseState.board.length === 16) {
+                loadedState = firebaseState;
+                loadedSource = 'Firebase';
+                console.log('Estado cargado exitosamente desde Firebase');
+            } else {
+                console.warn('Firebase contiene datos pero estructura inválida o incompleta');
             }
-        } catch (error) {
-            console.error(`Error al cargar desde ${file}:`, error);
-            try {
-                fs.appendFileSync(ERROR_LOG_FILE, `${new Date().toISOString()} - Error cargando desde ${file}: ${error.message}\n`);
-            } catch (logError) { }
+        } catch (firebaseError) {
+            console.error('Error al cargar desde Firebase:', firebaseError);
         }
     }
 
+    // 2. Si no se pudo cargar desde Firebase, intentar desde archivos locales
+    if (!loadedState) {
+        const fileOptions = [GAME_STATE_FILE, GAME_STATE_BACKUP_1, GAME_STATE_BACKUP_2];
+        
+        // Intentar cargar desde cada archivo en orden
+        for (const file of fileOptions) {
+            try {
+                if (fs.existsSync(file)) {
+                    const fileContent = fs.readFileSync(file, 'utf8');
+                    if (fileContent && fileContent.trim() !== '') {
+                        const parsedState = JSON.parse(fileContent);
+
+                        // Verificar que el estado tenga la estructura mínima necesaria
+                        if (parsedState &&
+                            parsedState.board &&
+                            Array.isArray(parsedState.board) &&
+                            parsedState.board.length === 16) {
+                            loadedState = parsedState;
+                            loadedSource = file;
+                            console.log(`Estado cargado exitosamente desde: ${file}`);
+                            break; // Salir del bucle si se cargó correctamente
+                        } else {
+                            console.warn(`Archivo ${file} existe pero tiene estructura inválida`);
+                        }
+                    } else {
+                        console.warn(`Archivo ${file} está vacío`);
+                    }
+                }
+            } catch (error) {
+                console.error(`Error al cargar desde ${file}:`, error);
+                try {
+                    fs.appendFileSync(ERROR_LOG_FILE, `${new Date().toISOString()} - Error cargando desde ${file}: ${error.message}\n`);
+                } catch (logError) { }
+            }
+        }
+    }
+
+    // 3. Aplicar el estado cargado si existe
     if (loadedState) {
         // Restaurar el estado del juego completo
         if (loadedState.board) {
@@ -394,20 +527,21 @@ function loadGameState() {
             }));
         }
 
-        // Hacer una copia del archivo que funcionó hacia los otros si no era el principal
-        if (loadedFile !== GAME_STATE_FILE) {
+        // 4. Si se cargó desde archivo local pero tenemos Firebase, sincronizar con Firebase
+        if (loadedSource !== 'Firebase' && db) {
+            console.log('Sincronizando estado cargado con Firebase...');
             try {
-                fs.writeFileSync(GAME_STATE_FILE, fs.readFileSync(loadedFile, 'utf8'));
-                console.log(`Archivo principal restaurado desde backup: ${loadedFile}`);
-            } catch (restoreError) {
-                console.error('Error al restaurar archivo principal:', restoreError);
+                await db.ref('gameState').set(loadedState);
+                console.log('Estado sincronizado correctamente con Firebase');
+            } catch (syncError) {
+                console.error('Error al sincronizar con Firebase:', syncError);
             }
         }
 
-        // Verificar la integridad del tablero
+        // 5. Verificar la integridad del tablero
         validateBoardIntegrity();
 
-        console.log(`Estado del juego cargado correctamente. Mesa global actual: ${globalTableNumber}`);
+        console.log(`Estado del juego cargado correctamente desde ${loadedSource}. Mesa global actual: ${globalTableNumber}`);
         return true;
     }
 
@@ -415,13 +549,38 @@ function loadGameState() {
     console.warn('NO SE PUDO CARGAR NINGÚN ESTADO VÁLIDO - INICIALIZANDO CON VALORES PREDETERMINADOS');
     gameState.board = generateBoard();
     globalTableNumber = 1;
+    
+    // Si tenemos Firebase disponible, guardar el estado inicial
+    if (db) {
+        try {
+            const initialState = {
+                board: gameState.board,
+                globalTableNumber: 1,
+                tableCount: 0,
+                lastTableResetDate: new Date().toDateString(),
+                status: 'playing',
+                timestamp: Date.now()
+            };
+            await db.ref('gameState').set(initialState);
+            console.log('Estado inicial guardado en Firebase');
+        } catch (initError) {
+            console.error('Error al guardar estado inicial en Firebase:', initError);
+        }
+    }
+    
     return false;
 }
 
 // Intentar cargar el estado guardado
-if (!loadGameState()) {
-    console.log('No se encontró estado guardado o hubo un error al cargarlo, usando valores predeterminados');
-}
+(async function() {
+    try {
+        if (!await loadGameState()) {
+            console.log('No se encontró estado guardado o hubo un error al cargarlo, usando valores predeterminados');
+        }
+    } catch (err) {
+        console.error('Error durante la carga inicial del estado:', err);
+    }
+})();
 
 // Generar el tablero con distribución aleatoria de fichas ganadoras y perdedoras en cada hilera
 function generateBoard() {
@@ -503,6 +662,12 @@ function updateUserScore(id, points) {
         // Verificar si debe ser bloqueado cuando llega a 23000 o menos
         checkScoreLimit(user);
 
+        // Actualizar en Firebase si está disponible
+        if (db) {
+            queueGameStateChange(`gameState/userScores/${id}/score`, user.score);
+            queueGameStateChange(`gameState/userScores/${id}/prevScore`, user.prevScore);
+        }
+
         // Guardar el estado después de actualizar la puntuación
         saveGameState();
 
@@ -519,12 +684,17 @@ function initPlayerSelections(userId) {
             rowSelections: [0, 0, 0, 0],
             totalSelected: 0
         };
+
+        // Actualizar en Firebase si está disponible
+        if (db) {
+            queueGameStateChange(`gameState/playerSelections/${userId}`, gameState.playerSelections[userId]);
+        }
     }
     return gameState.playerSelections[userId];
 }
 
 // Función para reiniciar solo el tablero y asegurar el orden de mesas
-function resetBoardOnly() {
+async function resetBoardOnly() {
     console.log("Reiniciando el tablero y avanzando a la siguiente mesa");
 
     // Incrementar el número de mesa global de manera ordenada
@@ -544,6 +714,23 @@ function resetBoardOnly() {
         gameState.playerSelections[userId].rowSelections = [0, 0, 0, 0];
         gameState.playerSelections[userId].totalSelected = 0;
     }
+    
+    // Actualizar toda la información crítica en Firebase inmediatamente si está disponible
+    if (db) {
+        try {
+            const criticalUpdates = {
+                'gameState/board': gameState.board,
+                'gameState/globalTableNumber': globalTableNumber,
+                'gameState/rowSelections': gameState.rowSelections,
+                'gameState/playerSelections': gameState.playerSelections
+            };
+            
+            await db.ref().update(criticalUpdates);
+            console.log('Información de nuevo tablero actualizada en Firebase');
+        } catch (firebaseError) {
+            console.error('Error al actualizar nuevo tablero en Firebase:', firebaseError);
+        }
+    }
 
     // Notificar a todos los clientes del cambio de mesa con tablero nuevo
     io.emit('boardReset', {
@@ -561,6 +748,11 @@ function resetBoardOnly() {
         }
 
         playerTableCount[playerId]++;
+
+        // Actualizar contador en Firebase
+        if (db) {
+            queueGameStateChange(`gameState/userScores/${playerId}/tablesPlayed`, playerTableCount[playerId]);
+        }
 
         // Enviar actualización del contador de mesas
         const playerSocketId = player.socketId;
@@ -598,11 +790,11 @@ function resetBoardOnly() {
     });
 
     // Guardar estado actualizado
-    saveGameState();
+    await saveGameState();
 }
 
 // Reiniciar el juego sin borrar el progreso - Actualizado para eventos en tiempo real
-function resetGame() {
+async function resetGame() {
     // Crear un nuevo tablero
     const newBoard = generateBoard();
 
@@ -636,6 +828,38 @@ function resetGame() {
     }
 
     clearTimeout(turnTimer);
+    
+    // Actualizar en Firebase si está disponible
+    if (db) {
+        try {
+            // Crear un objeto con todos los updates necesarios
+            const resetUpdates = {
+                'gameState/board': gameState.board,
+                'gameState/status': 'playing',
+                'gameState/globalTableNumber': 1,
+                'gameState/rowSelections': [0, 0, 0, 0],
+                'gameState/turnStartTime': Date.now()
+            };
+            
+            // Añadir reset de puntajes de todos los usuarios
+            users.forEach(user => {
+                if (!user.isAdmin) {
+                    resetUpdates[`gameState/userScores/${user.id}/score`] = 60000;
+                    resetUpdates[`gameState/userScores/${user.id}/prevScore`] = 60000;
+                    resetUpdates[`gameState/userScores/${user.id}/isBlocked`] = false;
+                    resetUpdates[`gameState/userScores/${user.id}/isLockedDueToScore`] = false;
+                    resetUpdates[`gameState/userScores/${user.id}/tablesPlayed`] = 0;
+                }
+            });
+            
+            // Enviar todos los updates de una vez
+            await db.ref().update(resetUpdates);
+            console.log('Reinicio de juego actualizado en Firebase');
+        } catch (firebaseError) {
+            console.error('Error al actualizar reinicio en Firebase:', firebaseError);
+        }
+    }
+
     io.emit('gameState', {
         board: gameState.board.map(tile => ({
             ...tile,
@@ -688,7 +912,7 @@ function resetGame() {
     }
 
     // Guardar estado después del reset
-    saveGameState();
+    await saveGameState();
 }
 
 // Función para sincronizar el estado del jugador - mejorada para consistencia
@@ -812,6 +1036,14 @@ function startPlayerTurn() {
     gameState.status = 'playing';
     gameState.turnStartTime = Date.now();
 
+    // Actualizar en Firebase si está disponible
+    if (db) {
+        queueGameStateChange('gameState/currentPlayerIndex', gameState.currentPlayerIndex);
+        queueGameStateChange('gameState/status', 'playing');
+        queueGameStateChange('gameState/turnStartTime', gameState.turnStartTime);
+        queueGameStateChange('gameState/rowSelections', gameState.rowSelections);
+    }
+
     io.emit('gameState', {
         board: gameState.board.map(tile => ({
             ...tile,
@@ -860,6 +1092,12 @@ io.on('connection', (socket) => {
             // Marcar al jugador como conectado
             const wasConnected = gameState.players[playerIndex].isConnected;
             gameState.players[playerIndex].isConnected = true;
+
+            // Actualizar en Firebase si está disponible
+            if (db) {
+                queueGameStateChange(`gameState/players/${playerIndex}/isConnected`, true);
+                queueGameStateChange(`gameState/players/${playerIndex}/socketId`, socket.id);
+            }
 
             // Notificar a otros jugadores sobre la reconexión
             if (!wasConnected) {
@@ -960,7 +1198,7 @@ io.on('connection', (socket) => {
     });
 
     // Guardar estado del juego al cerrar sesión - mejorado para garantizar persistencia
-    socket.on('saveGameState', ({ userId }) => {
+    socket.on('saveGameState', async ({ userId }) => {
         if (!userId) return;
 
         const user = getUserById(userId);
@@ -979,10 +1217,20 @@ io.on('connection', (socket) => {
             timestamp: Date.now()
         };
 
+        // Actualizar en Firebase si está disponible
+        if (db) {
+            try {
+                await db.ref(`gameState/playerGameStates/${userId}`).set(playerGameState[userId]);
+                console.log(`Estado específico de ${user.username} guardado en Firebase`);
+            } catch (error) {
+                console.error(`Error al guardar estado específico de ${user.username} en Firebase:`, error);
+            }
+        }
+
         console.log(`Estado de juego guardado para ${user.username}`);
 
         // Guardar el estado completo
-        saveGameState();
+        await saveGameState();
     });
 
     // Login
@@ -1048,6 +1296,17 @@ io.on('connection', (socket) => {
                 isConnected: true // Añadir esta propiedad
             });
 
+            // Actualizar en Firebase si está disponible
+            if (db) {
+                const newPlayerIndex = gameState.players.length - 1;
+                queueGameStateChange(`gameState/players/${newPlayerIndex}`, {
+                    id: userId,
+                    username: user.username,
+                    socketId: socket.id,
+                    isConnected: true
+                });
+            }
+
             console.log(`Usuario ${user.username} añadido al juego`);
 
             // IMPORTANTE: Forzar el estado a playing explícitamente
@@ -1058,6 +1317,11 @@ io.on('connection', (socket) => {
             if (!gameState.currentPlayer && !user.isAdmin && !user.isBlocked && !user.isLockedDueToScore) {
                 gameState.currentPlayer = gameState.players[gameState.players.length - 1];
                 gameState.currentPlayerIndex = gameState.players.length - 1;
+                
+                if (db) {
+                    queueGameStateChange('gameState/currentPlayerIndex', gameState.currentPlayerIndex);
+                    queueGameStateChange('gameState/status', 'playing');
+                }
             }
 
             // Iniciar turno (saltará a los jugadores no elegibles)
@@ -1067,6 +1331,10 @@ io.on('connection', (socket) => {
             console.log(`Estado del juego después de startPlayerTurn: ${gameState.status}`);
             if (gameState.status !== 'playing') {
                 gameState.status = 'playing';
+                
+                if (db) {
+                    queueGameStateChange('gameState/status', 'playing');
+                }
             }
 
             // IMPORTANTE: Agregar log para depuración
@@ -1118,6 +1386,12 @@ io.on('connection', (socket) => {
             const wasConnected = gameState.players[existingPlayerIndex].isConnected;
             gameState.players[existingPlayerIndex].isConnected = true;
 
+            // Actualizar en Firebase si está disponible
+            if (db) {
+                queueGameStateChange(`gameState/players/${existingPlayerIndex}/isConnected`, true);
+                queueGameStateChange(`gameState/players/${existingPlayerIndex}/socketId`, socket.id);
+            }
+
             // Notificar a otros jugadores sobre la reconexión
             if (!wasConnected) {
                 io.emit('playerConnectionChanged', {
@@ -1137,6 +1411,11 @@ io.on('connection', (socket) => {
             // Asegurarse de que el juego esté en estado 'playing' y haya un jugador actual
             if (gameState.status !== 'playing') {
                 gameState.status = 'playing';
+                
+                if (db) {
+                    queueGameStateChange('gameState/status', 'playing');
+                }
+                
                 startPlayerTurn(); // Reiniciar el turno si el juego estaba en espera
             }
 
@@ -1168,7 +1447,7 @@ io.on('connection', (socket) => {
     });
 
     // Seleccionar una ficha - Actualizada para bloqueo por límite de puntos
-    socket.on('selectTile', ({ tileIndex, currentScore }) => {
+    socket.on('selectTile', async ({ tileIndex, currentScore }) => {
         console.log(`Recibido evento selectTile para ficha ${tileIndex} de socket ${socket.id}`);
 
         socket.emit('tileSelectResponse', { received: true, tileIndex });
@@ -1279,8 +1558,27 @@ io.on('connection', (socket) => {
         gameState.board[tileIndex].selectedBy = user.username;
         gameState.board[tileIndex].selectedAt = Date.now(); // Añadir timestamp
 
+        // Actualizar en Firebase inmediatamente los valores críticos
+        if (db) {
+            try {
+                const criticalUpdates = {
+                    [`gameState/board/${tileIndex}/revealed`]: true,
+                    [`gameState/board/${tileIndex}/selectedBy`]: user.username,
+                    [`gameState/board/${tileIndex}/selectedAt`]: Date.now(),
+                    [`gameState/playerSelections/${userId}/rowSelections/${row}`]: playerSelections.rowSelections[row],
+                    [`gameState/playerSelections/${userId}/totalSelected`]: playerSelections.totalSelected,
+                    [`gameState/rowSelections`]: gameState.rowSelections
+                };
+                
+                await db.ref().update(criticalUpdates);
+                console.log('Selección de ficha actualizada en Firebase');
+            } catch (error) {
+                console.error('Error al actualizar selección de ficha en Firebase:', error);
+            }
+        }
+
         // Guardar estado INMEDIATAMENTE después de la selección
-        saveGameState();
+        await saveGameState();
 
         // Acceder al valor real de la ficha en el tablero del servidor
         const tileValue = gameState.board[tileIndex].value;
@@ -1295,6 +1593,19 @@ io.on('connection', (socket) => {
         user.prevScore = user.score; // Guardar la puntuación anterior
         user.score += tileValue; // Sumar exactamente el valor de la ficha
         const newScore = user.score;
+
+        // Actualizar en Firebase el puntaje inmediatamente
+        if (db) {
+            try {
+                await db.ref(`gameState/userScores/${userId}`).update({
+                    score: newScore,
+                    prevScore: oldScore
+                });
+                console.log('Puntaje actualizado en Firebase');
+            } catch (error) {
+                console.error('Error al actualizar puntaje en Firebase:', error);
+            }
+        }
 
         console.log(`PUNTUACIÓN ACTUALIZADA: ${user.username} ${oldScore} -> ${newScore} (${tileValue})`);
 
@@ -1321,9 +1632,6 @@ io.on('connection', (socket) => {
 
         socket.emit('forceScoreUpdate', newScore);
 
-        // Guardar estado NUEVAMENTE después de emitir
-        saveGameState();
-
         // Verificar si el jugador completó todas sus selecciones permitidas
         const allRowsFull = playerSelections.rowSelections.every(count => count >= 2);
 
@@ -1331,17 +1639,17 @@ io.on('connection', (socket) => {
             console.log("Todas las fichas han sido reveladas. Reiniciando tablero pero manteniendo puntuaciones");
 
             // Incrementar contador de mesas para todos los jugadores activos
-            gameState.players.forEach(player => {
+            for (const player of gameState.players) {
                 if (player.isConnected &&
                     !getUserById(player.id)?.isBlocked &&
                     !getUserById(player.id)?.isLockedDueToScore &&
                     !getUserById(player.id)?.isAdmin) {
                     incrementTableCount(player.id);
                 }
-            });
+            }
 
             // Reiniciar solo el tablero
-            resetBoardOnly();
+            await resetBoardOnly();
 
             return;
         }
@@ -1362,17 +1670,17 @@ io.on('connection', (socket) => {
             console.log("Todas las fichas han sido reveladas. Reiniciando tablero pero manteniendo puntuaciones");
 
             // Incrementar contador de mesas para todos los jugadores activos
-            gameState.players.forEach(player => {
+            for (const player of gameState.players) {
                 if (player.isConnected &&
                     !getUserById(player.id)?.isBlocked &&
                     !getUserById(player.id)?.isLockedDueToScore &&
                     !getUserById(player.id)?.isAdmin) {
                     incrementTableCount(player.id);
                 }
-            });
+            }
 
             // Reiniciar solo el tablero
-            resetBoardOnly();
+            await resetBoardOnly();
 
             return;
         }
@@ -1391,7 +1699,7 @@ io.on('connection', (socket) => {
     });
 
     // Agregar este nuevo manejador para sincronización forzada
-    socket.on('syncScore', ({ userId }) => {
+    socket.on('syncScore', async ({ userId }) => {
         console.log(`Solicitada sincronización de puntaje para: ${userId}`);
         const user = getUserById(userId);
         if (user) {
@@ -1404,7 +1712,7 @@ io.on('connection', (socket) => {
     });
 
     // Evento para recargar puntos (solo para administradores)
-    socket.on('rechargePoints', ({ userId }, callback) => {
+    socket.on('rechargePoints', async ({ userId }, callback) => {
         const adminId = connectedSockets[socket.id];
         if (!adminId) {
             callback({ success: false, message: 'No autorizado' });
@@ -1430,6 +1738,20 @@ io.on('connection', (socket) => {
         // Desbloquear al usuario
         targetUser.isBlocked = false;
 
+        // Actualizar en Firebase
+        if (db) {
+            try {
+                await db.ref(`gameState/userScores/${userId}`).update({
+                    score: targetUser.score,
+                    prevScore: targetUser.prevScore,
+                    isBlocked: false
+                });
+                console.log(`Recarga de puntos para ${targetUser.username} actualizada en Firebase`);
+            } catch (error) {
+                console.error(`Error al actualizar recarga de puntos en Firebase:`, error);
+            }
+        }
+
         // Notificar al usuario si está conectado
         const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
         if (playerSocketId) {
@@ -1442,13 +1764,13 @@ io.on('connection', (socket) => {
         }
 
         // Guardar estado
-        saveGameState();
+        await saveGameState();
 
         callback({ success: true });
     });
 
     // Evento para reiniciar los contadores de mesas (solo para admin)
-    socket.on('adminResetTables', (callback) => {
+    socket.on('adminResetTables', async (callback) => {
         const adminId = connectedSockets[socket.id];
         if (!adminId) {
             callback({ success: false, message: 'No autorizado' });
@@ -1461,7 +1783,7 @@ io.on('connection', (socket) => {
             return;
         }
 
-        adminResetTableCounters();
+        await adminResetTableCounters();
         callback({ success: true, message: 'Contadores de mesas reiniciados correctamente' });
     });
 
@@ -1492,7 +1814,7 @@ io.on('connection', (socket) => {
     });
 
     // Actualizar puntos (solo para admins)
-    socket.on('updatePoints', ({ userId, points }, callback) => {
+    socket.on('updatePoints', async ({ userId, points }, callback) => {
         const adminId = connectedSockets[socket.id];
         if (!adminId) {
             callback({ success: false, message: 'No autorizado' });
@@ -1514,6 +1836,19 @@ io.on('connection', (socket) => {
         // Actualizar puntuación
         const newScore = updateUserScore(userId, points);
 
+        // Actualizar en Firebase
+        if (db) {
+            try {
+                await db.ref(`gameState/userScores/${userId}`).update({
+                    score: newScore,
+                    prevScore: targetUser.prevScore
+                });
+                console.log(`Actualización de puntos para ${targetUser.username} registrada en Firebase`);
+            } catch (error) {
+                console.error('Error al actualizar puntos en Firebase:', error);
+            }
+        }
+
         // Notificar al usuario, si está conectado
         const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
         if (playerSocketId) {
@@ -1530,13 +1865,13 @@ io.on('connection', (socket) => {
         })));
 
         // Guardar estado después de actualizar puntos
-        saveGameState();
+        await saveGameState();
 
         callback({ success: true });
     });
 
     // Bloquear/desbloquear usuario (solo para admins)
-    socket.on('toggleBlockUser', ({ userId }, callback) => {
+    socket.on('toggleBlockUser', async ({ userId }, callback) => {
         const adminId = connectedSockets[socket.id];
         if (!adminId) {
             callback({ success: false, message: 'No autorizado' });
@@ -1557,6 +1892,16 @@ io.on('connection', (socket) => {
 
         // Cambiar estado de bloqueo
         targetUser.isBlocked = !targetUser.isBlocked;
+
+        // Actualizar en Firebase
+        if (db) {
+            try {
+                await db.ref(`gameState/userScores/${userId}/isBlocked`).set(targetUser.isBlocked);
+                console.log(`Estado de bloqueo para ${targetUser.username} actualizado en Firebase`);
+            } catch (error) {
+                console.error('Error al actualizar estado de bloqueo en Firebase:', error);
+            }
+        }
 
         // Notificar al usuario, si está conectado
         const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
@@ -1613,13 +1958,13 @@ io.on('connection', (socket) => {
         });
 
         // Guardar estado después de cambiar bloqueo
-        saveGameState();
+        await saveGameState();
 
         callback({ success: true });
     });
 
     // Evento para desbloquear usuario por puntaje (solo para admins)
-    socket.on('unlockUserScore', ({ userId }, callback) => {
+    socket.on('unlockUserScore', async ({ userId }, callback) => {
         const adminId = connectedSockets[socket.id];
         if (!adminId) {
             callback({ success: false, message: 'No autorizado' });
@@ -1641,6 +1986,16 @@ io.on('connection', (socket) => {
         // Desbloquear al usuario
         targetUser.isLockedDueToScore = false;
 
+        // Actualizar en Firebase
+        if (db) {
+            try {
+                await db.ref(`gameState/userScores/${userId}/isLockedDueToScore`).set(false);
+                console.log(`Desbloqueo por puntaje para ${targetUser.username} actualizado en Firebase`);
+            } catch (error) {
+                console.error('Error al actualizar desbloqueo por puntaje en Firebase:', error);
+            }
+        }
+
         // Notificar al usuario en tiempo real
         const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
         if (playerSocketId) {
@@ -1654,13 +2009,13 @@ io.on('connection', (socket) => {
         }
 
         // Guardar estado
-        saveGameState();
+        await saveGameState();
 
         callback({ success: true });
     });
 
     // Reiniciar juego (solo para admins)
-    socket.on('resetGame', (callback) => {
+    socket.on('resetGame', async (callback) => {
         const adminId = connectedSockets[socket.id];
         if (!adminId) {
             callback({ success: false, message: 'No autorizado' });
@@ -1673,12 +2028,12 @@ io.on('connection', (socket) => {
             return;
         }
 
-        resetGame();
+        await resetGame();
         callback({ success: true });
     });
 
     // Actualización directa de puntos (para admin) - NUEVO
-    socket.on('directSetPoints', ({ userId, newPoints }, callback) => {
+    socket.on('directSetPoints', async ({ userId, newPoints }, callback) => {
         const adminId = connectedSockets[socket.id];
         if (!adminId) {
             callback({ success: false, message: 'No autorizado' });
@@ -1701,11 +2056,24 @@ io.on('connection', (socket) => {
         targetUser.prevScore = targetUser.score;
         targetUser.score = parseInt(newPoints, 10);
 
+        // Actualizar en Firebase
+        if (db) {
+            try {
+                await db.ref(`gameState/userScores/${userId}`).update({
+                    score: targetUser.score,
+                    prevScore: targetUser.prevScore
+                });
+                console.log(`Puntuación fijada directamente para ${targetUser.username} en Firebase`);
+            } catch (error) {
+                console.error('Error al fijar puntuación directamente en Firebase:', error);
+            }
+        }
+
         // Verificar si debe ser bloqueado
         checkScoreLimit(targetUser);
 
         // Guardar estado después de actualizar puntos
-        saveGameState();
+        await saveGameState();
 
         // Notificar al usuario, si está conectado
         const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
@@ -1734,7 +2102,7 @@ io.on('connection', (socket) => {
     });
 
     // Evento para desbloquear mesas (solo para admins)
-    socket.on('unlockTables', ({ userId }, callback) => {
+    socket.on('unlockTables', async ({ userId }, callback) => {
         const adminId = connectedSockets[socket.id];
         if (!adminId) {
             callback({ success: false, message: 'No autorizado' });
@@ -1756,6 +2124,16 @@ io.on('connection', (socket) => {
         // Reiniciar contador de mesas para este usuario
         playerTableCount[userId] = 0;
 
+        // Actualizar en Firebase
+        if (db) {
+            try {
+                await db.ref(`gameState/userScores/${userId}/tablesPlayed`).set(0);
+                console.log(`Contador de mesas para ${targetUser.username} reiniciado en Firebase`);
+            } catch (error) {
+                console.error('Error al reiniciar contador de mesas en Firebase:', error);
+            }
+        }
+
         // Notificar al usuario
         const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
         if (playerSocketId) {
@@ -1769,7 +2147,7 @@ io.on('connection', (socket) => {
         }
 
         // Guardar estado
-        saveGameState();
+        await saveGameState();
 
         callback({ success: true });
     });
@@ -1784,6 +2162,11 @@ io.on('connection', (socket) => {
         if (playerIndex !== -1) {
             const player = gameState.players[playerIndex];
             player.isConnected = false;
+
+            // Actualizar en Firebase
+            if (db) {
+                queueGameStateChange(`gameState/players/${playerIndex}/isConnected`, false);
+            }
 
             // Notificar a todos los clientes sobre la desconexión
             io.emit('playerConnectionChanged', {
@@ -1804,7 +2187,6 @@ io.on('connection', (socket) => {
                 }, 1000);
             }
 
-            // Guardar estado antes de salir del juego para asegurar persistencia
             // Guardar estado específico del jugador
             playerGameState[userId] = {
                 board: gameState.board.map(tile => ({
@@ -1817,6 +2199,11 @@ io.on('connection', (socket) => {
                 tablesPlayed: playerTableCount[userId] || 0,
                 timestamp: Date.now()
             };
+
+            // Actualizar en Firebase
+            if (db) {
+                queueGameStateChange(`gameState/playerGameStates/${userId}`, playerGameState[userId]);
+            }
 
             // Actualizar estado para todos
             io.emit('gameState', {
@@ -1865,6 +2252,11 @@ io.on('connection', (socket) => {
                         tablesPlayed: playerTableCount[userId] || 0,
                         timestamp: Date.now()
                     };
+
+                    // Actualizar en Firebase
+                    if (db) {
+                        queueGameStateChange(`gameState/playerGameStates/${userId}`, playerGameState[userId]);
+                    }
                 }
             }
 
@@ -1872,6 +2264,12 @@ io.on('connection', (socket) => {
             const playerIndex = gameState.players.findIndex(player => player.id === userId);
             if (playerIndex !== -1) {
                 gameState.players[playerIndex].isConnected = false;
+                
+                // Actualizar en Firebase
+                if (db) {
+                    queueGameStateChange(`gameState/players/${playerIndex}/isConnected`, false);
+                }
+                
                 console.log(`Jugador ${gameState.players[playerIndex].username} marcado como desconectado`);
 
                 // Si era el turno de este jugador, pasar al siguiente inmediatamente
@@ -1896,7 +2294,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('completeBoard', ({ userId }) => {
+    socket.on('completeBoard', async ({ userId }) => {
         const user = getUserById(userId);
         if (!user) return;
 
@@ -1907,12 +2305,51 @@ io.on('connection', (socket) => {
         socket.emit('message', 'Has completado tus selecciones. Esperando a que se revelen todas las fichas del tablero.');
 
         // Guardar estado
-        saveGameState();
+        await saveGameState();
     });
 });
 
 // Configurar guardado periódico más frecuente
-setInterval(saveGameState, 30 * 1000); // Cada 30 segundos
+setInterval(async () => {
+    try {
+        await saveGameState();
+    } catch (error) {
+        console.error('Error en guardado periódico:', error);
+    }
+}, 30 * 1000); // Cada 30 segundos
+
+// Función para verificar estado de Firebase y reconectar si es necesario
+const checkFirebaseConnection = async () => {
+    if (!db) return; // Si Firebase no está configurado, no hacer nada
+    
+    try {
+        // Intento de escritura para verificar conexión
+        const testRef = db.ref('connection_test');
+        await testRef.set({
+            timestamp: Date.now(),
+            serverTime: admin.database.ServerValue.TIMESTAMP
+        });
+        console.log('Conexión a Firebase verificada correctamente');
+    } catch (error) {
+        console.error('Error en la conexión a Firebase, intentando reconectar:', error);
+        
+        // Intentar reconectar
+        try {
+            // En un entorno real, aquí iría código para reinicializar la conexión
+            // Pero en Firebase Admin SDK no es necesario ya que maneja reconexiones automáticamente
+            console.log('Firebase maneja reconexiones automáticamente');
+            
+            // Forzar sincronización después de reconectar
+            await saveGameState();
+            console.log('Estado sincronizado después de verificar conexión');
+        } catch (reconnectError) {
+            console.error('Error al reconectar con Firebase:', reconnectError);
+        }
+    }
+};
+
+// Verificar la conexión a Firebase cada 5 minutos
+setInterval(checkFirebaseConnection, 5 * 60 * 1000);
 
 // Limpieza de memoria en desuso - cada 30 minutos
 setInterval(() => {
@@ -1951,14 +2388,67 @@ app.get('/cors-config', (req, res) => {
     });
 });
 
+// Endpoint para verificar estado de Firebase
+app.get('/firebase-status', async (req, res) => {
+    if (!db) {
+        return res.json({
+            status: 'not_configured',
+            message: 'Firebase no está configurado en este servidor'
+        });
+    }
+    
+    try {
+        // Intento de escritura para verificar conexión
+        const testRef = db.ref('health_check');
+        const result = await testRef.set({
+            timestamp: Date.now(),
+            serverTime: admin.database.ServerValue.TIMESTAMP
+        });
+        
+        res.json({
+            status: 'connected',
+            message: 'Conexión a Firebase funcionando correctamente',
+            timestamp: Date.now()
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: 'error',
+            message: 'Error en la conexión a Firebase',
+            error: error.message
+        });
+    }
+});
+
+// Endpoint para verificar el estado del juego actual
+app.get('/game-state-summary', (req, res) => {
+    // Proporcionar un resumen del estado actual sin datos sensibles
+    const summary = {
+        totalPlayers: gameState.players.length,
+        connectedPlayers: gameState.players.filter(p => p.isConnected).length,
+        revealedTiles: gameState.board.filter(t => t.revealed).length,
+        tableNumber: globalTableNumber,
+        lastSaved: new Date().toISOString()
+    };
+    
+    res.json(summary);
+});
+
 // Logs de inicio
 console.log('Entorno:', process.env.NODE_ENV);
 console.log('URL del cliente:', process.env.CLIENT_URL);
+console.log('Firebase:', db ? 'Configurado' : 'No configurado');
 
 // Iniciar servidor
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     console.log(`Servidor ejecutándose en el puerto ${PORT}`);
+    
+    // Verificar Firebase al inicio
+    if (db) {
+        checkFirebaseConnection()
+            .then(() => console.log('Verificación inicial de Firebase completada'))
+            .catch(err => console.error('Error en verificación inicial de Firebase:', err));
+    }
 });
 
 // Ruta básica para comprobar que el servidor está funcionando
