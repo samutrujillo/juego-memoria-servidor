@@ -115,11 +115,28 @@ function validateBoardIntegrity() {
 setInterval(validateBoardIntegrity, 5 * 60 * 1000); // Cada 5 minutos
 
 // Función para verificar si un usuario debe ser bloqueado por puntos exactos
-// o por caer desde 60,000 a 23,000 o menos
+// o por caer a 23,000 o menos
 function checkScoreLimit(user) {
-    if ((user.score === 23000 || (user.score <= 23000 && user.prevScore >= 60000)) && !user.isAdmin) {
-        console.log(`Usuario ${user.username} bloqueado por alcanzar 23,000 puntos o bajar desde 60,000`);
+    // Verificar si el puntaje actual es menor o igual a 23,000
+    if (user.score <= 23000 && !user.isAdmin) {
+        console.log(`Usuario ${user.username} bloqueado por alcanzar o caer a ${user.score} puntos`);
         user.isLockedDueToScore = true;
+        
+        // Notificar inmediatamente al usuario a través de su socket si está conectado
+        const playerSocketId = gameState.players.find(p => p.id === user.id)?.socketId;
+        if (playerSocketId) {
+            io.to(playerSocketId).emit('scoreLimitReached', {
+                message: 'Has alcanzado o caído a 23,000 puntos o menos. Tu cuenta ha sido bloqueada temporalmente.'
+            });
+            io.to(playerSocketId).emit('blockStatusChanged', {
+                isLockedDueToScore: true,
+                message: 'Has alcanzado o caído a 23,000 puntos o menos. Tu cuenta ha sido bloqueada temporalmente.'
+            });
+        }
+        
+        // Guardar estado después del bloqueo
+        saveGameState();
+        
         return true;
     }
     return false;
@@ -439,23 +456,8 @@ function updateUserScore(id, points) {
         user.score += points;
         console.log(`Nueva puntuación: ${user.score}`);
 
-        // Verificar si debe ser bloqueado (incluye caer desde 60,000 a 23,000)
-        const shouldBlock = checkScoreLimit(user);
-        if (shouldBlock && !user.isLockedDueToScore) {
-            user.isLockedDueToScore = true;
-
-            const playerSocketId = gameState.players.find(p => p.id === id)?.socketId;
-            if (playerSocketId) {
-                io.to(playerSocketId).emit('message', 'Has sido bloqueado por alcanzar o llegar a 23,000 puntos. Contacta al administrador para recargar.');
-                io.to(playerSocketId).emit('scoreLimitReached', {
-                    message: 'Has alcanzado o llegado a 23,000 puntos y has sido bloqueado temporalmente.'
-                });
-                io.to(playerSocketId).emit('blockStatusChanged', {
-                    isLockedDueToScore: true,
-                    message: 'Has alcanzado o llegado a 23,000 puntos y has sido bloqueado temporalmente.'
-                });
-            }
-        }
+        // Verificar si debe ser bloqueado cuando llega a 23000 o menos
+        checkScoreLimit(user);
 
         // Guardar el estado después de actualizar la puntuación
         saveGameState();
@@ -898,10 +900,10 @@ io.on('connection', (socket) => {
                 'Has alcanzado el límite diario de mesas.' : ''
         });
 
-        // Verificar si el jugador está bloqueado por tener 23,000 puntos
+        // Verificar si el jugador está bloqueado por tener 23,000 puntos o menos
         if (user.isLockedDueToScore) {
             socket.emit('scoreLimitReached', {
-                message: 'Has alcanzado 23,000 puntos exactos y has sido bloqueado temporalmente.'
+                message: 'Has alcanzado 23,000 puntos o menos. Tu cuenta ha sido bloqueada temporalmente.'
             });
         }
 
@@ -1121,7 +1123,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Seleccionar una ficha - Actualizada para evitar alertas de puntos a otros jugadores
+    // Seleccionar una ficha - Actualizada para bloqueo por límite de puntos
     socket.on('selectTile', ({ tileIndex, currentScore }) => {
         console.log(`Recibido evento selectTile para ficha ${tileIndex} de socket ${socket.id}`);
 
@@ -1157,7 +1159,7 @@ io.on('connection', (socket) => {
         if (user.isLockedDueToScore) {
             console.log(`Usuario ${user.username} bloqueado por puntaje, no puede seleccionar fichas`);
             socket.emit('scoreLimitReached', {
-                message: 'Has alcanzado 23,000 puntos exactos. Contacta al administrador para recargar.'
+                message: 'Has alcanzado 23,000 puntos o menos. Contacta al administrador para recargar.'
             });
             return;
         }
@@ -1252,6 +1254,11 @@ io.on('connection', (socket) => {
 
         console.log(`PUNTUACIÓN ACTUALIZADA: ${user.username} ${oldScore} -> ${newScore} (${tileValue})`);
 
+        // IMPORTANTE: Verificar bloqueo por límite de puntos inmediatamente
+        if (newScore <= 23000 && !user.isAdmin) {
+            checkScoreLimit(user);
+        }
+
         // Añadir información de tipo de sonido correcta
         const soundType = tileValue > 0 ? 'win' : 'lose';
 
@@ -1272,24 +1279,6 @@ io.on('connection', (socket) => {
 
         // Guardar estado NUEVAMENTE después de emitir
         saveGameState();
-
-        // Verificar si debe ser bloqueado (ahora incluye caer desde 60,000 a 23,000)
-        if (checkScoreLimit(user)) {
-            socket.emit('scoreLimitReached', {
-                message: 'Has alcanzado o caído a 23,000 puntos y has sido bloqueado temporalmente.'
-            });
-            socket.emit('blockStatusChanged', {
-                isLockedDueToScore: true,
-                message: 'Has alcanzado o caído a 23,000 puntos y has sido bloqueado temporalmente.'
-            });
-
-            // Si era el jugador actual, pasar al siguiente
-            if (gameState.currentPlayer && gameState.currentPlayer.id === userId) {
-                setTimeout(() => {
-                    startPlayerTurn();
-                }, 1000);
-            }
-        }
 
         // Verificar si el jugador completó todas sus selecciones permitidas
         const allRowsFull = playerSelections.rowSelections.every(count => count >= 2);
@@ -1683,7 +1672,7 @@ io.on('connection', (socket) => {
             if (targetUser.isLockedDueToScore) {
                 io.to(playerSocketId).emit('blockStatusChanged', {
                     isLockedDueToScore: true,
-                    message: 'Has alcanzado 23,000 puntos exactos y has sido bloqueado temporalmente.'
+                    message: 'Has alcanzado 23,000 puntos o menos y has sido bloqueado temporalmente.'
                 });
             }
         }
