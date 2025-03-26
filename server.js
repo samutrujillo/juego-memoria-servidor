@@ -13,9 +13,10 @@ const path = require('path');
 
 const app = express();
 
-// Ruta para el archivo de estado del juego
+// Rutas para archivos de estado con sistema de respaldo
 const GAME_STATE_FILE = path.join(__dirname, 'game-state.json');
-// Ruta para archivo de registro de errores
+const GAME_STATE_BACKUP_1 = path.join(__dirname, 'game-state.backup1.json');
+const GAME_STATE_BACKUP_2 = path.join(__dirname, 'game-state.backup2.json');
 const ERROR_LOG_FILE = path.join(__dirname, 'error-log.txt');
 
 // Añadir estas nuevas variables para el sistema de mesas
@@ -93,12 +94,12 @@ function validateBoardIntegrity() {
     // Verificar que haya 8 fichas positivas y 8 negativas
     let positiveCount = 0;
     let negativeCount = 0;
-    
+
     for (const tile of gameState.board) {
         if (tile.value > 0) positiveCount++;
         if (tile.value < 0) negativeCount++;
     }
-    
+
     if (positiveCount !== 8 || negativeCount !== 8) {
         console.error(`ERROR DE INTEGRIDAD DEL TABLERO: ${positiveCount} positivas, ${negativeCount} negativas`);
         // Regenerar el tablero para corregir
@@ -107,7 +108,7 @@ function validateBoardIntegrity() {
         saveGameState();
         return false;
     }
-    
+
     return true;
 }
 
@@ -121,7 +122,7 @@ function checkScoreLimit(user) {
     if (user.score <= 23000 && !user.isAdmin) {
         console.log(`Usuario ${user.username} bloqueado por alcanzar o caer a ${user.score} puntos`);
         user.isLockedDueToScore = true;
-        
+
         // Notificar inmediatamente al usuario a través de su socket si está conectado
         const playerSocketId = gameState.players.find(p => p.id === user.id)?.socketId;
         if (playerSocketId) {
@@ -133,10 +134,10 @@ function checkScoreLimit(user) {
                 message: 'Has alcanzado o caído a 23,000 puntos o menos. Tu cuenta ha sido bloqueada temporalmente.'
             });
         }
-        
+
         // Guardar estado después del bloqueo
         saveGameState();
-        
+
         return true;
     }
     return false;
@@ -220,7 +221,7 @@ function incrementTableCount(userId) {
     return playerTableCount[userId];
 }
 
-// Función mejorada para guardar el estado del juego con más frecuencia
+// Función mejorada para guardar el estado del juego con respaldos
 function saveGameState() {
     const stateToSave = {
         board: gameState.board,
@@ -236,8 +237,7 @@ function saveGameState() {
         playerSelections: gameState.playerSelections,
         tableCount: gameState.tableCount,
         lastTableResetDate: gameState.lastTableResetDate,
-        globalTableNumber: globalTableNumber, // Guardar el número de mesa global
-        // Guardar también los datos de los usuarios y contadores de mesa
+        globalTableNumber: globalTableNumber,
         userScores: users.reduce((obj, user) => {
             obj[user.id] = {
                 score: user.score,
@@ -248,128 +248,172 @@ function saveGameState() {
             };
             return obj;
         }, {}),
-        // Guardar estado individual de cada jugador
-        playerGameStates: playerGameState
+        playerGameStates: playerGameState,
+        timestamp: Date.now() // Añadir timestamp para verificación
     };
 
+    const jsonData = JSON.stringify(stateToSave, null, 2);
+
     try {
-        // Primero guardar en un archivo temporal
-        const tempFile = GAME_STATE_FILE + '.tmp';
-        fs.writeFileSync(tempFile, JSON.stringify(stateToSave, null, 2));
-        
-        // Luego renombrar (esto es generalmente atómico en sistemas de archivos)
-        fs.renameSync(tempFile, GAME_STATE_FILE);
-        
-        console.log('Estado del juego guardado correctamente');
+        // Sistema de rotación de respaldos
+        // 1. Si existe el archivo principal, copiarlo como backup1
+        if (fs.existsSync(GAME_STATE_FILE)) {
+            try {
+                const mainFileContent = fs.readFileSync(GAME_STATE_FILE, 'utf8');
+                fs.writeFileSync(GAME_STATE_BACKUP_1, mainFileContent);
+            } catch (backupError) {
+                console.error('Error al crear respaldo 1:', backupError);
+            }
+        }
+
+        // 2. Si existe backup1, copiarlo como backup2
+        if (fs.existsSync(GAME_STATE_BACKUP_1)) {
+            try {
+                const backup1Content = fs.readFileSync(GAME_STATE_BACKUP_1, 'utf8');
+                fs.writeFileSync(GAME_STATE_BACKUP_2, backup1Content);
+            } catch (backupError) {
+                console.error('Error al crear respaldo 2:', backupError);
+            }
+        }
+
+        // 3. Guardar el nuevo estado en el archivo principal
+        fs.writeFileSync(GAME_STATE_FILE, jsonData);
+        console.log('Estado del juego guardado correctamente con respaldos');
     } catch (error) {
         console.error('Error al guardar el estado del juego:', error);
-        // Guardar el error en un archivo de log para diagnóstico
+        try {
+            // Intentar guardar directamente en los archivos de respaldo
+            fs.writeFileSync(GAME_STATE_BACKUP_1, jsonData);
+            console.log('Estado guardado en respaldo 1 tras error en archivo principal');
+        } catch (backup1Error) {
+            console.error('Error al guardar en respaldo 1:', backup1Error);
+            try {
+                fs.writeFileSync(GAME_STATE_BACKUP_2, jsonData);
+                console.log('Estado guardado en respaldo 2 tras errores previos');
+            } catch (backup2Error) {
+                console.error('Error crítico: No se pudo guardar el estado en ninguna ubicación');
+            }
+        }
+
         try {
             fs.appendFileSync(ERROR_LOG_FILE, `${new Date().toISOString()} - Error guardando estado: ${error.message}\n`);
         } catch (logError) {
-            console.error('Error adicional al escribir en archivo de log:', logError);
+            console.error('Error adicional al escribir en archivo de log');
         }
     }
 }
 
-// Función mejorada para cargar el estado del juego, garantizando persistencia total
+// Función mejorada para cargar el estado con múltiples respaldos
 function loadGameState() {
-    try {
-        if (fs.existsSync(GAME_STATE_FILE)) {
-            const fileContent = fs.readFileSync(GAME_STATE_FILE, 'utf8');
-            if (!fileContent || fileContent.trim() === '') {
-                throw new Error('Archivo de estado vacío');
-            }
-            
-            const savedState = JSON.parse(fileContent);
-            
-            // Restaurar el tablero con verificación estricta
-            if (savedState.board && savedState.board.length === 16) {
-                gameState.board = savedState.board;
-                console.log('Tablero restaurado correctamente desde estado guardado');
-            } else {
-                console.warn('Estado del tablero incompleto o inválido, generando uno nuevo');
-                gameState.board = generateBoard();
-            }
+    const fileOptions = [GAME_STATE_FILE, GAME_STATE_BACKUP_1, GAME_STATE_BACKUP_2];
+    let loadedState = null;
+    let loadedFile = null;
 
-            // Restaurar contador de mesas y fecha de último reinicio
-            if (savedState.tableCount !== undefined) {
-                gameState.tableCount = savedState.tableCount;
+    // Intentar cargar desde cada archivo en orden
+    for (const file of fileOptions) {
+        try {
+            if (fs.existsSync(file)) {
+                const fileContent = fs.readFileSync(file, 'utf8');
+                if (fileContent && fileContent.trim() !== '') {
+                    const parsedState = JSON.parse(fileContent);
+
+                    // Verificar que el estado tenga la estructura mínima necesaria
+                    if (parsedState &&
+                        parsedState.board &&
+                        Array.isArray(parsedState.board) &&
+                        parsedState.board.length === 16) {
+                        loadedState = parsedState;
+                        loadedFile = file;
+                        console.log(`Estado cargado exitosamente desde: ${file}`);
+                        break; // Salir del bucle si se cargó correctamente
+                    } else {
+                        console.warn(`Archivo ${file} existe pero tiene estructura inválida`);
+                    }
+                } else {
+                    console.warn(`Archivo ${file} está vacío`);
+                }
             }
+        } catch (error) {
+            console.error(`Error al cargar desde ${file}:`, error);
+            try {
+                fs.appendFileSync(ERROR_LOG_FILE, `${new Date().toISOString()} - Error cargando desde ${file}: ${error.message}\n`);
+            } catch (logError) { }
+        }
+    }
 
-            if (savedState.lastTableResetDate) {
-                gameState.lastTableResetDate = savedState.lastTableResetDate;
-            }
+    if (loadedState) {
+        // Restaurar el estado del juego completo
+        if (loadedState.board) {
+            gameState.board = loadedState.board;
+        }
 
-            // Cargar el número de mesa global si existe
-            if (savedState.globalTableNumber !== undefined) {
-                globalTableNumber = savedState.globalTableNumber;
-            } else {
-                globalTableNumber = 1; // Iniciar desde la mesa 1 si no hay datos guardados
-            }
+        if (loadedState.tableCount !== undefined) {
+            gameState.tableCount = loadedState.tableCount;
+        }
 
-            // Restaurar las selecciones por fila
-            if (savedState.rowSelections) {
-                gameState.rowSelections = savedState.rowSelections;
-            }
+        if (loadedState.lastTableResetDate) {
+            gameState.lastTableResetDate = loadedState.lastTableResetDate;
+        }
 
-            // Restaurar selecciones de jugadores
-            if (savedState.playerSelections) {
-                gameState.playerSelections = savedState.playerSelections;
-            }
+        if (loadedState.globalTableNumber !== undefined) {
+            globalTableNumber = loadedState.globalTableNumber;
+        }
 
-            // Restaurar estados guardados de cada jugador
-            if (savedState.playerGameStates) {
-                Object.assign(playerGameState, savedState.playerGameStates);
-            }
+        if (loadedState.rowSelections) {
+            gameState.rowSelections = loadedState.rowSelections;
+        }
 
-            // Restaurar las puntuaciones y contadores de los usuarios
-            if (savedState.userScores) {
-                for (const userId in savedState.userScores) {
-                    const user = users.find(u => u.id === userId);
-                    if (user) {
-                        user.score = savedState.userScores[userId].score;
-                        user.prevScore = savedState.userScores[userId].prevScore || user.score;
-                        user.isBlocked = savedState.userScores[userId].isBlocked;
-                        user.isLockedDueToScore = savedState.userScores[userId].isLockedDueToScore || false;
+        if (loadedState.playerSelections) {
+            gameState.playerSelections = loadedState.playerSelections;
+        }
 
-                        // Restaurar contador de mesas por jugador
-                        if (savedState.userScores[userId].tablesPlayed !== undefined) {
-                            playerTableCount[userId] = savedState.userScores[userId].tablesPlayed;
-                        }
+        if (loadedState.playerGameStates) {
+            Object.assign(playerGameState, loadedState.playerGameStates);
+        }
+
+        if (loadedState.userScores) {
+            for (const userId in loadedState.userScores) {
+                const user = users.find(u => u.id === userId);
+                if (user) {
+                    user.score = loadedState.userScores[userId].score;
+                    user.prevScore = loadedState.userScores[userId].prevScore || user.score;
+                    user.isBlocked = loadedState.userScores[userId].isBlocked;
+                    user.isLockedDueToScore = loadedState.userScores[userId].isLockedDueToScore || false;
+
+                    if (loadedState.userScores[userId].tablesPlayed !== undefined) {
+                        playerTableCount[userId] = loadedState.userScores[userId].tablesPlayed;
                     }
                 }
             }
+        }
 
-            // Restaurar jugadores si existen en el estado guardado
-            if (savedState.players) {
-                gameState.players = savedState.players.map(player => ({
-                    ...player,
-                    isConnected: false // Inicialmente marcar todos como desconectados
-                }));
+        if (loadedState.players) {
+            gameState.players = loadedState.players.map(player => ({
+                ...player,
+                isConnected: false
+            }));
+        }
+
+        // Hacer una copia del archivo que funcionó hacia los otros si no era el principal
+        if (loadedFile !== GAME_STATE_FILE) {
+            try {
+                fs.writeFileSync(GAME_STATE_FILE, fs.readFileSync(loadedFile, 'utf8'));
+                console.log(`Archivo principal restaurado desde backup: ${loadedFile}`);
+            } catch (restoreError) {
+                console.error('Error al restaurar archivo principal:', restoreError);
             }
+        }
 
-            // Verificar integridad del tablero después de cargar
-            validateBoardIntegrity();
-            
-            console.log(`Estado del juego cargado correctamente. Mesa global actual: ${globalTableNumber}`);
-            return true;
-        }
-    } catch (error) {
-        console.error('Error al cargar el estado del juego:', error);
-        // Guardar el error en un archivo de log para diagnóstico
-        try {
-            fs.appendFileSync(ERROR_LOG_FILE, `${new Date().toISOString()} - Error cargando estado: ${error.message}\n`);
-        } catch (logError) {
-            console.error('Error adicional al escribir en archivo de log:', logError);
-        }
-        
-        // En caso de error, iniciar con un tablero nuevo pero mantener el resto del estado
-        console.log('Generando tablero nuevo después de error de carga');
-        gameState.board = generateBoard();
+        // Verificar la integridad del tablero
+        validateBoardIntegrity();
+
+        console.log(`Estado del juego cargado correctamente. Mesa global actual: ${globalTableNumber}`);
+        return true;
     }
 
-    // Si no hay datos guardados o hubo un error, iniciar desde la mesa 1
+    // Si no se pudo cargar ningún estado, inicializar con valores predeterminados
+    console.warn('NO SE PUDO CARGAR NINGÚN ESTADO VÁLIDO - INICIALIZANDO CON VALORES PREDETERMINADOS');
+    gameState.board = generateBoard();
     globalTableNumber = 1;
     return false;
 }
@@ -386,7 +430,7 @@ function generateBoard() {
     // Para cada hilera (4 hileras en total, con 4 fichas cada una)
     for (let row = 0; row < 4; row++) {
         const rowTiles = [];
-        
+
         // Crear 2 fichas ganadoras y 2 perdedoras para esta hilera
         for (let i = 0; i < 2; i++) {
             rowTiles.push({ value: 15000, revealed: false });  // Ganadora
