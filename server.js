@@ -813,7 +813,7 @@ async function resetGame() {
         user.prevScore = 60000;
         user.score = 60000;
         user.isBlocked = false;
-        user.isLockedDueToScore = false; // Desbloquear por puntaje también
+        user.isLockedDueToScore = false;
       }
     });
   
@@ -822,8 +822,31 @@ async function resetGame() {
       playerTableCount[userId] = 0;
     }
   
-    if (gameState.players.length > 0) {
-      gameState.currentPlayer = gameState.players[0];
+    // Reiniciar selecciones de cada jugador
+    for (const userId in gameState.playerSelections) {
+      gameState.playerSelections[userId] = {
+        rowSelections: [0, 0, 0, 0],
+        totalSelected: 0
+      };
+    }
+  
+    // Asegurarse de que todos los jugadores estén establecidos como jugadores activos
+    gameState.players.forEach(player => {
+      // Marcamos a todos como conectados si están en la partida
+      if (!getUserById(player.id)?.isAdmin) {
+        player.isConnected = true;
+      }
+    });
+  
+    // Establecer el primer jugador no-admin activo como jugador actual
+    const eligiblePlayers = gameState.players.filter(player => {
+      const userData = getUserById(player.id);
+      return player.isConnected && userData && !userData.isAdmin;
+    });
+  
+    if (eligiblePlayers.length > 0) {
+      gameState.currentPlayer = eligiblePlayers[0];
+      gameState.currentPlayerIndex = gameState.players.findIndex(p => p.id === eligiblePlayers[0].id);
     }
   
     clearTimeout(turnTimer);
@@ -834,10 +857,11 @@ async function resetGame() {
         // Crear un objeto con todos los updates necesarios
         const resetUpdates = {
           'gameState/board': gameState.board,
-          'gameState/status': 'resetCompleted', // Marcar específicamente como resetCompleted
+          'gameState/status': 'playing', // Directamente en playing
           'gameState/globalTableNumber': 1,
           'gameState/rowSelections': [0, 0, 0, 0],
-          'gameState/turnStartTime': Date.now()
+          'gameState/turnStartTime': Date.now(),
+          'gameState/playerSelections': gameState.playerSelections
         };
         
         // Añadir reset de puntajes de todos los usuarios
@@ -851,6 +875,11 @@ async function resetGame() {
           }
         });
         
+        // Actualizar el currentPlayer y currentPlayerIndex
+        if (gameState.currentPlayer) {
+          resetUpdates['gameState/currentPlayerIndex'] = gameState.currentPlayerIndex;
+        }
+        
         // Enviar todos los updates de una vez
         await db.ref().update(resetUpdates);
         console.log('Reinicio de juego actualizado en Firebase');
@@ -859,23 +888,19 @@ async function resetGame() {
       }
     }
   
-    // Notificar el estado de resetCompleted a todos los clientes
-    io.emit('gameState', {
-      board: gameState.board.map(tile => ({
-        ...tile,
-        value: tile.revealed ? tile.value : null
-      })),
+    // Notificar a todos los jugadores con un mensaje claro del reinicio
+    io.emit('gameResetMessage', {
+      message: "El administrador ha reiniciado el juego. Todos los puntajes han sido restablecidos a 60,000.",
+      command: "resetComplete"
+    });
+  
+    // Enviar evento específico de reinicio completo con datos más completos
+    io.emit('gameCompletelyReset', {
+      message: "El juego ha sido reiniciado completamente",
+      newBoard: gameState.board,
+      status: 'playing',
       currentPlayer: gameState.currentPlayer,
-      players: gameState.players.map(player => ({
-        id: player.id,
-        username: player.username,
-        isBlocked: getUserById(player.id).isBlocked,
-        isLockedDueToScore: getUserById(player.id).isLockedDueToScore,
-        isConnected: player.isConnected
-      })),
-      status: 'resetCompleted', // Usar este estado específico para que los clientes sepan que es un reinicio
-      turnStartTime: gameState.turnStartTime,
-      rowSelections: gameState.rowSelections
+      rowSelections: [0, 0, 0, 0]
     });
   
     // Enviar puntajes actualizados a todos los jugadores
@@ -883,6 +908,7 @@ async function resetGame() {
       const user = getUserById(player.id);
       if (user && player.socketId) {
         io.to(player.socketId).emit('forceScoreUpdate', user.score);
+        
         // Notificar el cambio de estado de bloqueo
         io.to(player.socketId).emit('blockStatusChanged', {
           isLockedDueToScore: false,
@@ -897,36 +923,17 @@ async function resetGame() {
           maxReached: false,
           lockReason: ''
         });
+        
+        // Forzar sincronización completa para cada jugador
+        io.to(player.socketId).emit('forceSyncRequest', { userId: player.id });
       }
     });
   
-    // Notificar a todos los jugadores del reinicio
-    io.emit('boardReset', {
-      message: "El administrador ha reiniciado el juego. Todos los puntajes han sido restablecidos a 60,000.",
-      newTableNumber: 1,
-      newBoard: gameState.board
-    });
-    
-    // NUEVO: Enviar evento específico para reinicio completo
-    io.emit('gameCompletelyReset', {
-      message: "El juego ha sido reiniciado completamente",
-      newBoard: gameState.board,
-      status: 'playing'
-    });
-  
-    // Cambiar el estado a 'playing' después de un pequeño retraso para dar tiempo a los clientes a procesar
+    // Iniciar nuevo turno después de un breve retraso
     setTimeout(() => {
-      gameState.status = 'playing';
-      if (gameState.players.length > 0) {
-        startPlayerTurn();
-      }
-      // Notificar que ahora estamos en modo de juego
-      io.emit('gameState', {
-        status: 'playing',
-        currentPlayer: gameState.currentPlayer
-      });
+      startPlayerTurn();
       
-      // NUEVO: Forzar actualización de estado para todos
+      // Forzar actualización del estado del juego para todos los clientes
       io.emit('forceGameStateRefresh', {
         board: gameState.board,
         currentPlayer: gameState.currentPlayer,
@@ -937,7 +944,9 @@ async function resetGame() {
           isLockedDueToScore: getUserById(player.id).isLockedDueToScore,
           isConnected: player.isConnected
         })),
-        status: 'playing'
+        status: 'playing',
+        canSelectTiles: true,
+        rowSelections: [0, 0, 0, 0]
       });
     }, 2000);
   
