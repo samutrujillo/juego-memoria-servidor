@@ -983,7 +983,7 @@ function startPlayerTurn() {
             setTimeout(() => {
                 startPlayerTurn();
             }, 500);
-        }, 4000);
+        }, 6000);
     } else {
         // Para múltiples jugadores, buscar el siguiente jugador elegible
         let nextPlayerFound = false;
@@ -1504,7 +1504,7 @@ io.on('connection', (socket) => {
 
         // Verificar si el tiempo se agotó
         const tiempoTranscurrido = Date.now() - gameState.turnStartTime;
-        if (tiempoTranscurrido > 4000) {
+        if (tiempoTranscurrido > 6000) {
             console.log(`Tiempo agotado para ${user.username}, han pasado ${tiempoTranscurrido}ms`);
             socket.emit('message', 'Tiempo agotado para este turno');
             return;
