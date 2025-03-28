@@ -760,7 +760,7 @@ async function resetBoardOnly() {
         gameState.playerSelections[userId].rowSelections = [0, 0, 0, 0];
         gameState.playerSelections[userId].totalSelected = 0;
     }
-
+    
     // NUEVO: Verificar qué jugadores están realmente conectados
     const connectedPlayerIds = new Set();
     Object.keys(connectedSockets).forEach(socketId => {
@@ -770,18 +770,30 @@ async function resetBoardOnly() {
         }
     });
 
-    // NUEVO: Actualizar el estado de conexión de los jugadores
+    // CRÍTICO: Preservar el estado de bloqueo real de cada jugador, no aplicar bloqueos adicionales
     for (const player of gameState.players) {
+        // Actualizar solo el estado de conexión
         player.isConnected = connectedPlayerIds.has(player.id);
+        
+        // IMPORTANTE: Verificar que el bloqueo solo sea por puntaje (≤ 23,000)
+        const user = getUserById(player.id);
+        if (user && !user.isAdmin) {
+            // Solo permitir bloqueo automático si el puntaje es ≤ 23,000
+            if (user.score > 23000 && user.isLockedDueToScore) {
+                user.isLockedDueToScore = false; // Desbloquear si el puntaje es > 23,000
+            }
+            
+            // No alterar el estado de isBlocked (solo administrador puede cambiarlo)
+        }
     }
 
-    // NUEVO: Si solo hay un jugador conectado, establecerlo como el jugador actual
+    // Si solo hay un jugador conectado, establecerlo como el jugador actual
     const connectedPlayers = gameState.players.filter(player => player.isConnected);
     if (connectedPlayers.length === 1 && !getUserById(connectedPlayers[0].id)?.isAdmin) {
         gameState.currentPlayer = connectedPlayers[0];
         gameState.currentPlayerIndex = gameState.players.findIndex(p => p.id === connectedPlayers[0].id);
     }
-
+    
     // Actualizar toda la información crítica en Firebase inmediatamente si está disponible
     if (db) {
         try {
@@ -793,7 +805,7 @@ async function resetBoardOnly() {
                 'gameState/players': gameState.players,
                 'gameState/currentPlayerIndex': gameState.currentPlayerIndex
             };
-
+            
             await db.ref().update(criticalUpdates);
             console.log('Información de nuevo tablero actualizada en Firebase');
         } catch (firebaseError) {
