@@ -214,7 +214,7 @@ let turnTimer = null;
 
 // Función para verificar y desbloquear usuarios específicos (Orion y Nova)
 function unblockSpecificUsers() {
-    console.log("Verificando y desbloqueando usuarios específicos...");
+    console.log("Verificando usuarios específicos...");
     
     // Lista de usuarios que necesitan verificación especial
     const usersToCheck = ["Orion", "Nova"];
@@ -225,10 +225,14 @@ function unblockSpecificUsers() {
             // Solo bloquear por puntaje si realmente corresponde
             const shouldBeBlocked = user.score <= 23000;
             
-            if (user.isBlocked || user.isLockedDueToScore !== shouldBeBlocked) {
+            // Verificar si hay un cambio de estado real (antes vs después)
+            const wasBlocked = user.isBlocked || user.isLockedDueToScore;
+            
+            // Solo aplicar cambios si hay un cambio real de estado
+            if (shouldBeBlocked !== wasBlocked) {
                 console.log(`Corrigiendo estado para usuario específico ${username}`);
                 
-                // Solo bloquear por puntaje, no por otros motivos
+                // Actualizar estados
                 user.isLockedDueToScore = shouldBeBlocked;
                 user.isBlocked = false;
                 
@@ -246,7 +250,7 @@ function unblockSpecificUsers() {
                     queueGameStateChange(`gameState/userScores/${user.id}/isLockedDueToScore`, shouldBeBlocked);
                 }
                 
-                // Notificar al usuario si está conectado
+                // Notificar al usuario si está conectado SOLO si hubo cambio
                 const playerInfo = gameState.players.find(p => p.id === user.id);
                 if (playerInfo && playerInfo.socketId) {
                     io.to(playerInfo.socketId).emit('blockStatusChanged', {
@@ -261,7 +265,7 @@ function unblockSpecificUsers() {
         }
     }
     
-    // Guardar cambios
+    // Guardar cambios solo si hubo modificaciones
     saveGameState();
 }
 
