@@ -175,6 +175,12 @@ let turnTimer = null;
 // Función para encolar cambios para guardado diferencial
 function queueGameStateChange(path, value) {
     if (!db) return; // Si no está disponible Firebase, no hacer nada
+    
+    // No permitir valores undefined en Firebase
+    if (value === undefined) {
+        console.warn(`Advertencia: se intentó guardar un valor undefined en ${path}. Usando null en su lugar.`);
+        value = null;
+    }
 
     pendingChanges[path] = value;
 
@@ -187,7 +193,15 @@ function queueGameStateChange(path, value) {
             // Guardar cambios acumulados
             db.ref().update(updates)
                 .then(() => console.log('Cambios incrementales guardados en Firebase'))
-                .catch(error => console.error('Error al guardar cambios incrementales:', error));
+                .catch(error => {
+                    console.error('Error al guardar cambios incrementales:', error);
+                    
+                    // Intentar guardar los cambios uno por uno para identificar cuáles son problemáticos
+                    Object.entries(updates).forEach(([path, value]) => {
+                        db.ref(path).set(value)
+                            .catch(err => console.error(`Error guardando ${path}:`, err));
+                    });
+                });
         }, 1000); // Guardar después de 1 segundo de inactividad
     }
 }
@@ -412,6 +426,7 @@ function adminResetTableCounters() {
 function checkTableLimit(userId) {
     if (!playerTableCount[userId]) {
         playerTableCount[userId] = 0;
+        return false; // Si no hay contador, definitivamente no ha alcanzado el límite
     }
 
     return playerTableCount[userId] >= MAX_TABLES_PER_DAY;
@@ -423,13 +438,18 @@ function incrementTableCount(userId) {
         playerTableCount[userId] = 0;
     }
 
-    playerTableCount[userId]++;
-    gameState.tableCount++;
+    // Solo incrementar si no ha alcanzado el límite
+    if (playerTableCount[userId] < MAX_TABLES_PER_DAY) {
+        playerTableCount[userId]++;
+        gameState.tableCount++;
 
-    // Actualizar en Firebase si está disponible
-    if (db) {
-        queueGameStateChange(`gameState/userScores/${userId}/tablesPlayed`, playerTableCount[userId]);
-        queueGameStateChange('gameState/tableCount', gameState.tableCount);
+        // Actualizar en Firebase si está disponible
+        if (db) {
+            queueGameStateChange(`gameState/userScores/${userId}/tablesPlayed`, playerTableCount[userId]);
+            queueGameStateChange('gameState/tableCount', gameState.tableCount);
+        }
+    } else {
+        console.log(`Usuario ${userId} ya alcanzó el límite de ${MAX_TABLES_PER_DAY} mesas, no incrementando contador`);
     }
 
     // Guardar estado
@@ -440,14 +460,17 @@ function incrementTableCount(userId) {
 
 // Función mejorada para guardar el estado del juego con Firebase y respaldos locales
 async function saveGameState() {
+    // Crear una copia limpia de los jugadores para evitar valores undefined
+    const cleanPlayers = gameState.players.map(player => ({
+        id: player.id,
+        username: player.username,
+        socketId: player.socketId || null, // Convertir undefined a null para Firebase
+        isConnected: player.isConnected === undefined ? false : player.isConnected // Asegurar que no sea undefined
+    }));
+
     const stateToSave = {
         board: gameState.board,
-        players: gameState.players.map(player => ({
-            id: player.id,
-            username: player.username,
-            socketId: player.socketId,
-            isConnected: player.isConnected
-        })),
+        players: cleanPlayers,
         currentPlayerIndex: gameState.currentPlayerIndex,
         status: gameState.status,
         rowSelections: gameState.rowSelections,
@@ -480,6 +503,27 @@ async function saveGameState() {
             savedSuccessfully = true;
         } catch (firebaseError) {
             console.error('Error al guardar en Firebase, intentando respaldo local:', firebaseError);
+            
+            // Intentar con una versión más sencilla si falló el guardado completo
+            try {
+                // Eliminar posibles propiedades problemáticas
+                const simplifiedState = {
+                    ...stateToSave,
+                    // Sanear los datos aún más
+                    players: stateToSave.players.map(p => ({
+                        id: p.id || 'unknown',
+                        username: p.username || 'unknown',
+                        socketId: null, // Usar null explícitamente
+                        isConnected: Boolean(p.isConnected) // Forzar a boolean
+                    }))
+                };
+                
+                await db.ref('gameState').set(simplifiedState);
+                console.log('Estado simplificado guardado en Firebase');
+                savedSuccessfully = true;
+            } catch (retryError) {
+                console.error('Error al guardar versión simplificada en Firebase:', retryError);
+            }
         }
     }
 
@@ -833,6 +877,10 @@ async function resetBoardOnly() {
     globalTableNumber++;
     if (globalTableNumber > 10) {
         globalTableNumber = 1; // Volver a la mesa 1 después de la 10
+        console.log("Vuelta completa de mesas: reiniciando a mesa 1");
+        
+        // IMPORTANTE: No reiniciar los contadores de mesas jugadas por jugador
+        // Esto podría ser lo que causa el bloqueo al volver a la mesa 1
     }
 
     // Crear nuevo tablero sin fichas reveladas
@@ -869,7 +917,10 @@ async function resetBoardOnly() {
     // Verificar que no sea admin y que no esté bloqueado
     const eligiblePlayers = gameState.players.filter(player => {
         const userData = getUserById(player.id);
-        return player.isConnected && userData && !userData.isBlocked && !userData.isLockedDueToScore && !userData.isAdmin;
+        return player.isConnected && userData && !userData.isBlocked && 
+            // SOLO bloquear por puntaje <= 23000, no por límite de mesas
+            (userData.score > 23000 || !userData.isLockedDueToScore) && 
+            !userData.isAdmin;
     });
 
     if (eligiblePlayers.length === 1) {
@@ -905,25 +956,33 @@ async function resetBoardOnly() {
     // Notificar a todos los clientes del cambio de mesa con tablero nuevo
     // Asegurarse de no enviar información que pueda afectar estados de bloqueo
     io.emit('boardReset', {
-        message: "Todas las fichas fueron reveladas. ¡Avanzando a la mesa " + globalTableNumber + "!",
+        message: globalTableNumber === 1 
+            ? "Todas las fichas fueron reveladas. ¡Volviendo a la mesa 1!" 
+            : "Todas las fichas fueron reveladas. ¡Avanzando a la mesa " + globalTableNumber + "!",
         newTableNumber: globalTableNumber,
         newBoard: gameState.board, // Enviar el tablero nuevo completo
         connectedPlayers: gameState.players.filter(p => p.isConnected).map(p => p.id)
     });
 
-    // Actualizar estado de contadores de mesa para cada jugador
+    // Actualizar estado de contadores de mesa para cada jugador SOLO si no hemos llegado al límite
     for (const player of gameState.players) {
         const playerId = player.id;
         const playerUser = getUserById(playerId);
         
-        // Verificar que el usuario exista y no esté bloqueado por puntaje
-        if (!playerUser || playerUser.isLockedDueToScore) continue;
+        // Verificar si el usuario existe y su estado de bloqueo SOLO se debe al puntaje
+        if (!playerUser) continue;
+        if (playerUser.isLockedDueToScore && playerUser.score <= 23000) continue;
 
-        if (!playerTableCount[playerId]) {
+        // IMPORTANTE: Solo incrementar si no ha alcanzado el límite de mesas
+        // Esto evita que se bloqueen al cambiar ciclos de mesa
+        if (playerTableCount[playerId] === undefined) {
             playerTableCount[playerId] = 0;
         }
-
-        playerTableCount[playerId]++;
+        
+        // Solo incrementar si no ha alcanzado el límite
+        if (playerTableCount[playerId] < MAX_TABLES_PER_DAY) {
+            playerTableCount[playerId]++;
+        }
 
         // Actualizar contador en Firebase
         if (db) {
@@ -1247,7 +1306,13 @@ function startPlayerTurn() {
         // Encontrar el índice del jugador elegible en la lista principal
         const eligiblePlayerIndex = gameState.players.findIndex(p => p.id === eligiblePlayers[0].id);
         gameState.currentPlayerIndex = eligiblePlayerIndex;
-        gameState.currentPlayer = gameState.players[eligiblePlayerIndex];
+        
+        // Asegurarse de que no haya propiedades undefined en el objeto jugador
+        gameState.currentPlayer = {
+            ...gameState.players[eligiblePlayerIndex],
+            socketId: gameState.players[eligiblePlayerIndex].socketId || null,
+            isConnected: Boolean(gameState.players[eligiblePlayerIndex].isConnected)
+        };
 
         // IMPORTANTE: Si solo hay un jugador, hacerlo siempre el jugador actual
         clearTimeout(turnTimer);
@@ -1292,7 +1357,13 @@ function startPlayerTurn() {
             return;
         }
 
-        gameState.currentPlayer = gameState.players[gameState.currentPlayerIndex];
+        // Asegurarse de que no haya propiedades undefined en el objeto jugador actual
+        gameState.currentPlayer = {
+            ...gameState.players[gameState.currentPlayerIndex],
+            socketId: gameState.players[gameState.currentPlayerIndex].socketId || null,
+            isConnected: Boolean(gameState.players[gameState.currentPlayerIndex].isConnected)
+        };
+        
         console.log(`Turno de ${gameState.currentPlayer.username}, tiene 6 segundos`);
 
         clearTimeout(turnTimer);
@@ -1310,27 +1381,62 @@ function startPlayerTurn() {
     gameState.status = 'playing';
     gameState.turnStartTime = Date.now();
 
-    // Actualizar en Firebase si está disponible
+    // Actualizar en Firebase si está disponible - MODIFICADO para evitar undefined
     if (db) {
-        queueGameStateChange('gameState/currentPlayerIndex', gameState.currentPlayerIndex);
-        queueGameStateChange('gameState/status', 'playing');
-        queueGameStateChange('gameState/turnStartTime', gameState.turnStartTime);
-        queueGameStateChange('gameState/rowSelections', gameState.rowSelections);
+        // Usar objeto de actualizaciones para evitar errores parciales
+        const updates = {
+            'gameState/currentPlayerIndex': gameState.currentPlayerIndex,
+            'gameState/status': 'playing',
+            'gameState/turnStartTime': gameState.turnStartTime,
+            'gameState/rowSelections': gameState.rowSelections
+        };
+        
+        // Añadir información del jugador actual de forma segura
+        if (gameState.currentPlayer) {
+            updates['gameState/currentPlayer'] = {
+                id: gameState.currentPlayer.id,
+                username: gameState.currentPlayer.username,
+                socketId: gameState.currentPlayer.socketId || null, // Evitar undefined
+                isConnected: Boolean(gameState.currentPlayer.isConnected) // Convertir a booleano explícito
+            };
+        }
+        
+        // Actualizar en Firebase con manejo de errores
+        db.ref().update(updates)
+            .then(() => console.log('Estado de turno actualizado en Firebase'))
+            .catch(error => {
+                console.error('Error al actualizar estado de turno en Firebase:', error);
+                // Intentar actualizaciones individuales como respaldo
+                Object.entries(updates).forEach(([path, value]) => {
+                    db.ref(path).set(value)
+                        .catch(err => console.log(`Error actualizando ${path}:`, err));
+                });
+            });
     }
+
+    // Asegurarse de que los players emitidos a los clientes no tengan undefined
+    const sanitizedPlayers = gameState.players.map(player => {
+        const userData = getUserById(player.id);
+        return {
+            id: player.id,
+            username: player.username,
+            isBlocked: userData ? userData.isBlocked : false,
+            isLockedDueToScore: userData ? userData.isLockedDueToScore : false,
+            isConnected: Boolean(player.isConnected) // Convertir a booleano explícito
+        };
+    });
 
     io.emit('gameState', {
         board: gameState.board.map(tile => ({
             ...tile,
             value: tile.revealed ? tile.value : null
         })),
-        currentPlayer: gameState.currentPlayer,
-        players: gameState.players.map(player => ({
-            id: player.id,
-            username: player.username,
-            isBlocked: getUserById(player.id).isBlocked,
-            isLockedDueToScore: getUserById(player.id).isLockedDueToScore,
-            isConnected: player.isConnected // Asegurarse de enviar el estado de conexión correcto
-        })),
+        currentPlayer: {
+            id: gameState.currentPlayer.id,
+            username: gameState.currentPlayer.username,
+            // No enviar socketId a los clientes
+        },
+        players: sanitizedPlayers,
         status: 'playing',
         turnStartTime: gameState.turnStartTime,
         rowSelections: gameState.rowSelections
