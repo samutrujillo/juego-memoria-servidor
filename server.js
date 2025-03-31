@@ -422,34 +422,48 @@ function adminResetTableCounters() {
     saveGameState();
 }
 
-// Función para verificar el límite de mesas
+// Función para verificar el límite de mesas - MODIFICADA para no bloquear automáticamente
 function checkTableLimit(userId) {
+    // Verificar si el usuario existe
+    const user = getUserById(userId);
+    if (!user) return false;
+    
+    // Si es admin, nunca está limitado
+    if (user.isAdmin) return false;
+    
+    // IMPORTANTE: Solo verificar bloqueo por puntaje, no por límite de mesas
+    if (user.score <= 23000 && user.isLockedDueToScore) {
+        return true;
+    }
+    
+    // Si el usuario está bloqueado manualmente, respetarlo
+    if (user.isBlocked) {
+        return true;
+    }
+    
+    // Por razones de seguridad, inicializar si no existe
     if (!playerTableCount[userId]) {
         playerTableCount[userId] = 0;
-        return false; // Si no hay contador, definitivamente no ha alcanzado el límite
     }
-
-    return playerTableCount[userId] >= MAX_TABLES_PER_DAY;
+    
+    // Reportar el límite pero NO bloquear automáticamente
+    return false; // NUNCA bloquear automáticamente por razones que no sean puntaje
 }
 
-// Función para incrementar el contador de mesas
+// Función para incrementar el contador de mesas - MODIFICADA para no bloquear
 function incrementTableCount(userId) {
     if (!playerTableCount[userId]) {
         playerTableCount[userId] = 0;
     }
 
-    // Solo incrementar si no ha alcanzado el límite
-    if (playerTableCount[userId] < MAX_TABLES_PER_DAY) {
-        playerTableCount[userId]++;
-        gameState.tableCount++;
+    // Incrementar contador, pero NUNCA bloquear automáticamente
+    playerTableCount[userId]++;
+    gameState.tableCount++;
 
-        // Actualizar en Firebase si está disponible
-        if (db) {
-            queueGameStateChange(`gameState/userScores/${userId}/tablesPlayed`, playerTableCount[userId]);
-            queueGameStateChange('gameState/tableCount', gameState.tableCount);
-        }
-    } else {
-        console.log(`Usuario ${userId} ya alcanzó el límite de ${MAX_TABLES_PER_DAY} mesas, no incrementando contador`);
+    // Actualizar en Firebase si está disponible
+    if (db) {
+        queueGameStateChange(`gameState/userScores/${userId}/tablesPlayed`, playerTableCount[userId]);
+        queueGameStateChange('gameState/tableCount', gameState.tableCount);
     }
 
     // Guardar estado
@@ -877,10 +891,31 @@ async function resetBoardOnly() {
     globalTableNumber++;
     if (globalTableNumber > 10) {
         globalTableNumber = 1; // Volver a la mesa 1 después de la 10
-        console.log("Vuelta completa de mesas: reiniciando a mesa 1");
-        
-        // IMPORTANTE: No reiniciar los contadores de mesas jugadas por jugador
-        // Esto podría ser lo que causa el bloqueo al volver a la mesa 1
+        console.log("Ciclo completo: Volviendo a mesa 1");
+    }
+
+    // IMPORTANTE: Antes de continuar, verificar y corregir cualquier bloqueo automático incorrecto
+    // Solo permitir bloqueos por puntaje <= 23000
+    for (const player of gameState.players) {
+        const user = getUserById(player.id);
+        if (user && !user.isAdmin) {
+            // Verificar si el usuario está bloqueado por otra razón que no sea puntaje
+            if (user.isLockedDueToScore && user.score > 23000) {
+                console.log(`Corrigiendo bloqueo incorrecto para ${user.username} (score: ${user.score})`);
+                user.isLockedDueToScore = false;
+                
+                // Notificar al usuario si está conectado
+                if (player.socketId) {
+                    io.to(player.socketId).emit('userUnlocked', {
+                        message: 'Tu cuenta ha sido desbloqueada automáticamente.'
+                    });
+                    io.to(player.socketId).emit('blockStatusChanged', {
+                        isLockedDueToScore: false,
+                        message: 'Tu cuenta ha sido desbloqueada automáticamente.'
+                    });
+                }
+            }
+        }
     }
 
     // Crear nuevo tablero sin fichas reveladas
@@ -895,8 +930,7 @@ async function resetBoardOnly() {
         gameState.playerSelections[userId].totalSelected = 0;
     }
 
-    // IMPORTANTE: Garantizar que no se modifique el estado de bloqueo
-    // Verificar qué jugadores están realmente conectados sin modificar bloqueos
+    // IMPORTANTE: Verificar qué jugadores están realmente conectados
     const connectedPlayerIds = new Set();
     Object.keys(connectedSockets).forEach(socketId => {
         const userId = connectedSockets[socketId];
@@ -905,45 +939,40 @@ async function resetBoardOnly() {
         }
     });
 
-    // Actualizar SOLO el estado de conexión de los jugadores, no modificar bloqueos
+    // Actualizar SOLO el estado de conexión de los jugadores, NO modificar estados de bloqueo
     for (const player of gameState.players) {
-        // Solo actualizamos el estado de conexión, no modificamos el estado de bloqueo
         player.isConnected = connectedPlayerIds.has(player.id);
-        
-        // NO modificar estados de bloqueo aquí
     }
 
-    // Si solo hay un jugador conectado, establecerlo como el jugador actual
-    // Verificar que no sea admin y que no esté bloqueado
+    // Verificar jugadores elegibles - SOLO verificar bloqueo por puntaje
     const eligiblePlayers = gameState.players.filter(player => {
         const userData = getUserById(player.id);
-        return player.isConnected && userData && !userData.isBlocked && 
-            // SOLO bloquear por puntaje <= 23000, no por límite de mesas
-            (userData.score > 23000 || !userData.isLockedDueToScore) && 
-            !userData.isAdmin;
+        // Un jugador es elegible si:
+        // 1. Está conectado
+        // 2. No es admin
+        // 3. No está bloqueado manualmente por admin
+        // 4. Tiene puntaje > 23000 o no está bloqueado por puntaje
+        return player.isConnected && 
+               userData && 
+               !userData.isAdmin && 
+               !userData.isBlocked && 
+               (userData.score > 23000 || !userData.isLockedDueToScore);
     });
 
-    if (eligiblePlayers.length === 1) {
+    if (eligiblePlayers.length > 0) {
+        // Si hay jugadores elegibles, seleccionar uno como jugador actual
         gameState.currentPlayer = eligiblePlayers[0];
         gameState.currentPlayerIndex = gameState.players.findIndex(p => p.id === eligiblePlayers[0].id);
     }
 
-    // Actualizar toda la información crítica en Firebase inmediatamente si está disponible
+    // Actualizar información crítica en Firebase (si está disponible)
     if (db) {
         try {
             const criticalUpdates = {
                 'gameState/board': gameState.board,
                 'gameState/globalTableNumber': globalTableNumber,
                 'gameState/rowSelections': gameState.rowSelections,
-                'gameState/playerSelections': gameState.playerSelections,
-                'gameState/players': gameState.players.map(p => ({
-                    id: p.id,
-                    username: p.username,
-                    socketId: p.socketId,
-                    isConnected: p.isConnected
-                    // NO incluir estados de bloqueo aquí
-                })),
-                'gameState/currentPlayerIndex': gameState.currentPlayerIndex
+                'gameState/playerSelections': gameState.playerSelections
             };
 
             await db.ref().update(criticalUpdates);
@@ -953,63 +982,34 @@ async function resetBoardOnly() {
         }
     }
 
-    // Notificar a todos los clientes del cambio de mesa con tablero nuevo
-    // Asegurarse de no enviar información que pueda afectar estados de bloqueo
+    // Notificar a todos los clientes del cambio de mesa
     io.emit('boardReset', {
         message: globalTableNumber === 1 
             ? "Todas las fichas fueron reveladas. ¡Volviendo a la mesa 1!" 
             : "Todas las fichas fueron reveladas. ¡Avanzando a la mesa " + globalTableNumber + "!",
         newTableNumber: globalTableNumber,
-        newBoard: gameState.board, // Enviar el tablero nuevo completo
+        newBoard: gameState.board,
         connectedPlayers: gameState.players.filter(p => p.isConnected).map(p => p.id)
     });
 
-    // Actualizar estado de contadores de mesa para cada jugador SOLO si no hemos llegado al límite
+    // CRÍTICO: No incrementar contadores de mesa ni verificar límites aquí
+    // Esto podría estar causando el bloqueo automático
+    
+    // En lugar de incrementar automáticamente, solo emitir información actualizada
+    // de la mesa a todos los jugadores
     for (const player of gameState.players) {
-        const playerId = player.id;
-        const playerUser = getUserById(playerId);
-        
-        // Verificar si el usuario existe y su estado de bloqueo SOLO se debe al puntaje
-        if (!playerUser) continue;
-        if (playerUser.isLockedDueToScore && playerUser.score <= 23000) continue;
-
-        // IMPORTANTE: Solo incrementar si no ha alcanzado el límite de mesas
-        // Esto evita que se bloqueen al cambiar ciclos de mesa
-        if (playerTableCount[playerId] === undefined) {
-            playerTableCount[playerId] = 0;
-        }
-        
-        // Solo incrementar si no ha alcanzado el límite
-        if (playerTableCount[playerId] < MAX_TABLES_PER_DAY) {
-            playerTableCount[playerId]++;
-        }
-
-        // Actualizar contador en Firebase
-        if (db) {
-            queueGameStateChange(`gameState/userScores/${playerId}/tablesPlayed`, playerTableCount[playerId]);
-        }
-
-        // Enviar actualización del contador de mesas
-        const playerSocketId = player.socketId;
-        if (playerSocketId && player.isConnected) {
-            io.to(playerSocketId).emit('tablesUpdate', {
-                tablesPlayed: playerTableCount[playerId],
+        if (player.socketId && player.isConnected) {
+            // Enviar información de la mesa actual, pero NO incrementar contadores
+            io.to(player.socketId).emit('tablesUpdate', {
+                tablesPlayed: playerTableCount[player.id] || 0, // Usar valor actual, no incrementar
                 currentTable: globalTableNumber,
-                maxReached: playerTableCount[playerId] >= MAX_TABLES_PER_DAY,
-                lockReason: playerTableCount[playerId] >= MAX_TABLES_PER_DAY ?
-                    'Has alcanzado el límite diario de mesas.' : ''
+                maxReached: false, // IMPORTANTE: No bloquear automáticamente
+                lockReason: ''
             });
-
-            // Si alcanzó el límite, notificar
-            if (playerTableCount[playerId] >= MAX_TABLES_PER_DAY) {
-                io.to(playerSocketId).emit('tableLimitReached', {
-                    message: 'Has alcanzado el límite diario de mesas.'
-                });
-            }
         }
     }
 
-    // Emitir nuevo estado del juego sin modificar estados de bloqueo
+    // Emitir nuevo estado del juego 
     io.emit('gameState', {
         board: gameState.board,
         currentPlayer: gameState.currentPlayer,
@@ -1018,8 +1018,9 @@ async function resetBoardOnly() {
             return {
                 id: player.id,
                 username: player.username,
-                isBlocked: userData ? userData.isBlocked : false, // Usar el valor real de la lista de usuarios
-                isLockedDueToScore: userData ? userData.isLockedDueToScore : false, // Usar el valor real
+                isBlocked: userData ? userData.isBlocked : false, 
+                // Verificar explícitamente que solo se bloquee por puntaje <= 23000
+                isLockedDueToScore: userData ? (userData.score <= 23000 ? userData.isLockedDueToScore : false) : false,
                 isConnected: player.isConnected
             };
         }),
