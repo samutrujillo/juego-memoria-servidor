@@ -1029,7 +1029,6 @@ async function resetBoardOnly() {
     await saveGameState();
 }
 
-// Modificar la función resetGame
 async function resetGame() {
     // Crear un nuevo tablero
     const newBoard = generateBoard();
@@ -1040,6 +1039,19 @@ async function resetGame() {
     gameState.currentPlayerIndex = 0;
     gameState.turnStartTime = Date.now();
     gameState.rowSelections = [0, 0, 0, 0];
+    
+    // Reiniciar selecciones por hilera para cada jugador individualmente
+    gameState.playerSelections = {}; // Limpiar completamente todas las selecciones
+  
+    // Reinicializar las selecciones vacías para cada jugador conectado
+    gameState.players.forEach(player => {
+      if (player.id) {
+        gameState.playerSelections[player.id] = {
+          rowSelections: [0, 0, 0, 0],
+          totalSelected: 0
+        };
+      }
+    });
   
     // Reiniciar el número de mesa global
     globalTableNumber = 1;
@@ -1126,6 +1138,7 @@ async function resetGame() {
           'gameState/status': 'resetCompleted', // Marcar específicamente como resetCompleted
           'gameState/globalTableNumber': 1,
           'gameState/rowSelections': [0, 0, 0, 0],
+          'gameState/playerSelections': gameState.playerSelections, // Incluir todas las selecciones reiniciadas
           'gameState/turnStartTime': Date.now()
         };
         
@@ -1164,7 +1177,8 @@ async function resetGame() {
       })),
       status: 'resetCompleted', // Usar este estado específico para que los clientes sepan que es un reinicio
       turnStartTime: gameState.turnStartTime,
-      rowSelections: gameState.rowSelections
+      rowSelections: [0, 0, 0, 0], // Asegurar que se envía con valores reiniciados
+      playerSelections: gameState.playerSelections // Incluir selecciones reiniciadas por jugador
     });
   
     // Enviar evento específico para reinicio completo con conexión verificada
@@ -1176,7 +1190,9 @@ async function resetGame() {
         id: player.id,
         username: player.username,
         isConnected: player.isConnected // Estado de conexión verificado
-      }))
+      })),
+      rowSelections: [0, 0, 0, 0], // Agregar las selecciones reiniciadas
+      playerSelections: gameState.playerSelections // Incluir las selecciones reiniciadas
     });
   
     // Enviar puntajes actualizados a todos los jugadores
@@ -1208,6 +1224,12 @@ async function resetGame() {
       newBoard: gameState.board
     });
   
+    // Enviar mensaje específico sobre el reinicio de las selecciones
+    io.emit('gameResetMessage', {
+      message: "Todas las selecciones por hilera han sido reiniciadas.",
+      command: "resetComplete"
+    });
+  
     // Cambiar el estado a 'playing' después de un pequeño retraso para dar tiempo a los clientes a procesar
     setTimeout(() => {
       gameState.status = 'playing';
@@ -1217,7 +1239,8 @@ async function resetGame() {
       // Notificar que ahora estamos en modo de juego
       io.emit('gameState', {
         status: 'playing',
-        currentPlayer: gameState.currentPlayer
+        currentPlayer: gameState.currentPlayer,
+        rowSelections: [0, 0, 0, 0] // Enviar explícitamente las selecciones reiniciadas
       });
       
       // NUEVO: Forzar actualización de estado para todos
@@ -1231,13 +1254,16 @@ async function resetGame() {
           isLockedDueToScore: getUserById(player.id).isLockedDueToScore,
           isConnected: player.isConnected
         })),
-        status: 'playing'
+        status: 'playing',
+        rowSelections: [0, 0, 0, 0], // Agregar explícitamente las selecciones reiniciadas
+        playerSelections: gameState.playerSelections, // Incluir todas las selecciones reiniciadas
+        canSelectTiles: true // Asegurar que los jugadores puedan seleccionar nuevamente
       });
     }, 2000);
   
     // Guardar estado después del reset
     await saveGameState();
-}
+  }
 
 // Función para sincronizar el estado del jugador - mejorada para consistencia
 function syncPlayerState(userId, socketId) {
