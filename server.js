@@ -408,13 +408,21 @@ function adminResetTableCounters() {
     saveGameState();
 }
 
-// Función para verificar el límite de mesas
+// Modificar la verificación de mesas
+// Si es mesa 10 y el jugador ha completado exactamente el máximo, permitir jugar
+// para que pueda completar el ciclo
 function checkTableLimit(userId) {
     if (!playerTableCount[userId]) {
         playerTableCount[userId] = 0;
     }
+    
+    // Si es mesa 10 y el jugador ha completado exactamente el máximo, permitir jugar
+    // para que pueda completar el ciclo
+    if (globalTableNumber === 10 && playerTableCount[userId] === MAX_TABLES_PER_DAY) {
+        return false; // No bloquear en este caso especial
+    }
 
-    return playerTableCount[userId] >= MAX_TABLES_PER_DAY;
+    return playerTableCount[userId] > MAX_TABLES_PER_DAY;
 }
 
 // Función para incrementar el contador de mesas
@@ -445,27 +453,27 @@ async function saveGameState() {
         players: gameState.players.map(player => ({
             id: player.id,
             username: player.username,
-            socketId: player.socketId,
-            isConnected: player.isConnected
+            socketId: player.socketId || null, // Usar null en lugar de undefined
+            isConnected: player.isConnected || false // Asegurar valor booleano válido
         })),
-        currentPlayerIndex: gameState.currentPlayerIndex,
-        status: gameState.status,
-        rowSelections: gameState.rowSelections,
-        playerSelections: gameState.playerSelections,
-        tableCount: gameState.tableCount,
-        lastTableResetDate: gameState.lastTableResetDate,
-        globalTableNumber: globalTableNumber,
+        currentPlayerIndex: gameState.currentPlayerIndex || 0,
+        status: gameState.status || 'playing',
+        rowSelections: gameState.rowSelections || [0, 0, 0, 0],
+        playerSelections: gameState.playerSelections || {},
+        tableCount: gameState.tableCount || 0,
+        lastTableResetDate: gameState.lastTableResetDate || new Date().toDateString(),
+        globalTableNumber: globalTableNumber || 1,
         userScores: users.reduce((obj, user) => {
             obj[user.id] = {
-                score: user.score,
-                prevScore: user.prevScore,
-                isBlocked: user.isBlocked,
-                isLockedDueToScore: user.isLockedDueToScore,
+                score: user.score || 60000,
+                prevScore: user.prevScore || 60000,
+                isBlocked: user.isBlocked || false,
+                isLockedDueToScore: user.isLockedDueToScore || false,
                 tablesPlayed: playerTableCount[user.id] || 0
             };
             return obj;
         }, {}),
-        playerGameStates: playerGameState,
+        playerGameStates: playerGameState || {},
         timestamp: Date.now() // Añadir timestamp para verificación
     };
 
@@ -825,6 +833,51 @@ function initPlayerSelections(userId) {
     return gameState.playerSelections[userId];
 }
 
+// Función para verificar y corregir problemas conocidos
+function verifyAndFixGameState() {
+    console.log("Verificando integridad del estado del juego...");
+    
+    // 1. Verificar que no haya fichas en estado inconsistente
+    let fichasCorregidas = 0;
+    for (let i = 0; i < gameState.board.length; i++) {
+        // Si la ficha no existe o tiene valores inválidos, corregirla
+        if (!gameState.board[i] || gameState.board[i].value === undefined) {
+            gameState.board[i] = { 
+                value: (Math.random() > 0.5 ? 15000 : -15000), 
+                revealed: false 
+            };
+            fichasCorregidas++;
+        }
+    }
+    
+    // 2. Verificar que el tablero tenga el balance correcto (8 positivas, 8 negativas)
+    validateBoardIntegrity();
+    
+    // 3. Verificar que los jugadores no tengan estados de bloqueo inconsistentes
+    const inconsistenciasCorregidas = verifyBlockingStates();
+    
+    // 4. Verificar que el contador de mesas esté en rango válido
+    if (globalTableNumber < 1 || globalTableNumber > 10) {
+        console.log(`Corrigiendo número de mesa inválido: ${globalTableNumber}`);
+        globalTableNumber = 1;
+    }
+    
+    // 5. Verificar que las selecciones de hilera estén en valores válidos
+    if (!gameState.rowSelections || !Array.isArray(gameState.rowSelections) || gameState.rowSelections.length !== 4) {
+        gameState.rowSelections = [0, 0, 0, 0];
+        console.log("Corrigiendo rowSelections inválido");
+    }
+    
+    // 6. Si detectamos alguna corrección, guardar el estado corregido
+    if (fichasCorregidas > 0 || inconsistenciasCorregidas > 0) {
+        console.log(`Se realizaron correcciones: ${fichasCorregidas} fichas, ${inconsistenciasCorregidas} estados de bloqueo`);
+        saveGameState();
+    }
+}
+
+// Ejecutar cada 5 minutos para mantener el juego en buen estado
+setInterval(verifyAndFixGameState, 5 * 60 * 1000);
+
 // Función para reiniciar solo el tablero y asegurar el orden de mesas
 async function resetBoardOnly() {
     console.log("Reiniciando el tablero y avanzando a la siguiente mesa");
@@ -833,6 +886,7 @@ async function resetBoardOnly() {
     globalTableNumber++;
     if (globalTableNumber > 10) {
         globalTableNumber = 1; // Volver a la mesa 1 después de la 10
+        console.log("Ciclo completado de 10 mesas, volviendo a la mesa 1");
     }
 
     // Crear nuevo tablero sin fichas reveladas
@@ -967,6 +1021,9 @@ async function resetBoardOnly() {
         status: 'playing',
         rowSelections: gameState.rowSelections
     });
+
+    // Ejecutar verificación adicional para corregir posibles problemas
+    verifyAndFixGameState();
 
     // Guardar estado actualizado
     await saveGameState();
@@ -1471,6 +1528,72 @@ io.on('connection', (socket) => {
         });
     });
 
+    // Evento para verificar y corregir estado de las mesas
+    socket.on('checkTableStatus', async ({ userId }) => {
+        if (!userId) return;
+
+        const user = getUserById(userId);
+        if (!user) return;
+
+        // Verificar si el usuario está realmente bloqueado por mesas
+        const isReallyBlocked = checkTableLimit(userId);
+        
+        // Si está en la mesa 10 y bloqueado, pero debería poder jugar, desbloquearlo
+        if (globalTableNumber === 10 && isReallyBlocked && playerTableCount[userId] <= MAX_TABLES_PER_DAY) {
+            console.log(`Corrigiendo bloqueo incorrecto en mesa 10 para ${user.username}`);
+            playerTableCount[userId] = Math.min(playerTableCount[userId], MAX_TABLES_PER_DAY - 1);
+            
+            // Notificar al usuario
+            socket.emit('tablesUpdate', {
+                tablesPlayed: playerTableCount[userId],
+                currentTable: globalTableNumber,
+                maxReached: false,
+                lockReason: ''
+            });
+            
+            // Actualizar en Firebase
+            if (db) {
+                queueGameStateChange(`gameState/userScores/${userId}/tablesPlayed`, playerTableCount[userId]);
+            }
+            
+            // Guardar estado corregido
+            await saveGameState();
+        }
+        
+        // Siempre sincronizar el estado actual
+        syncPlayerState(userId, socket.id);
+    });
+
+    // Evento para reiniciar las selecciones de hilera si hay problemas
+    socket.on('resetRowSelections', ({ userId }) => {
+        if (!userId) return;
+        
+        // Verificar que el usuario exista
+        const user = getUserById(userId);
+        if (!user) return;
+        
+        console.log(`Reiniciando selecciones de hilera para ${user.username}`);
+        
+        // Reiniciar selecciones para este usuario
+        if (gameState.playerSelections[userId]) {
+            gameState.playerSelections[userId].rowSelections = [0, 0, 0, 0];
+            gameState.playerSelections[userId].totalSelected = 0;
+        } else {
+            initPlayerSelections(userId);
+        }
+        
+        // Sincronizar con el cliente
+        socket.emit('gameState', {
+            rowSelections: [0, 0, 0, 0]
+        });
+        
+        // Actualizar en Firebase
+        if (db) {
+            queueGameStateChange(`gameState/playerSelections/${userId}/rowSelections`, [0, 0, 0, 0]);
+            queueGameStateChange(`gameState/playerSelections/${userId}/totalSelected`, 0);
+        }
+    });
+
     // Guardar estado del juego al cerrar sesión - mejorado para garantizar persistencia
     socket.on('saveGameState', async ({ userId }) => {
         if (!userId) return;
@@ -1803,9 +1926,31 @@ io.on('connection', (socket) => {
         }
 
         // VERIFICACIÓN CRÍTICA: Asegurarse de que no se pueda seleccionar la misma ficha dos veces
-        if (gameState.board[tileIndex].revealed) {
+        if (gameState.board[tileIndex] && gameState.board[tileIndex].revealed) {
             console.log(`IGNORANDO selección repetida para ficha ${tileIndex}`);
             socket.emit('tileSelectError', { message: 'Esta ficha ya fue seleccionada' });
+            
+            // NUEVO: Forzar sincronización del tablero para corregir posibles inconsistencias
+            socket.emit('forceGameStateRefresh', {
+                board: gameState.board,
+                currentPlayer: gameState.currentPlayer,
+                players: gameState.players.map(player => ({
+                    id: player.id,
+                    username: player.username,
+                    isBlocked: getUserById(player.id).isBlocked || false,
+                    isLockedDueToScore: getUserById(player.id).isLockedDueToScore || false,
+                    isConnected: player.isConnected || false
+                })),
+                status: 'playing',
+                rowSelections: gameState.playerSelections[userId]?.rowSelections || [0, 0, 0, 0]
+            });
+            return;
+        }
+
+        // Asegurarse de que la ficha exista antes de manipularla
+        if (!gameState.board[tileIndex]) {
+            console.error(`Ficha en índice ${tileIndex} no existe`);
+            socket.emit('tileSelectError', { message: 'Ficha no válida' });
             return;
         }
 
