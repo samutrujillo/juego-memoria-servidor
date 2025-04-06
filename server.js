@@ -53,7 +53,7 @@ const GAME_STATE_BACKUP_2 = path.join(__dirname, 'game-state.backup2.json');
 const ERROR_LOG_FILE = path.join(__dirname, 'error-log.txt');
 
 // Añadir estas nuevas variables para el sistema de mesas
-const MAX_TABLES_PER_DAY = 10;
+const MAX_TABLES_PER_DAY = 5;
 const playerGameState = {}; // Para guardar el estado de juego de cada jugador
 const playerTableCount = {}; // Contar mesas jugadas por cada jugador
 let globalTableNumber = 1; // Mesa global que todos los jugadores verán
@@ -409,16 +409,16 @@ function adminResetTableCounters() {
 }
 
 // Modificar la verificación de mesas
-// Si es mesa 10 y el jugador ha completado exactamente el máximo, permitir jugar
+// Si es mesa 5 y el jugador ha completado exactamente el máximo, permitir jugar
 // para que pueda completar el ciclo
 function checkTableLimit(userId) {
     if (!playerTableCount[userId]) {
         playerTableCount[userId] = 0;
     }
     
-    // Si es mesa 10 y el jugador ha completado exactamente el máximo, permitir jugar
+    // Si es mesa 5 y el jugador ha completado exactamente el máximo, permitir jugar
     // para que pueda completar el ciclo
-    if (globalTableNumber === 10 && playerTableCount[userId] === MAX_TABLES_PER_DAY) {
+    if (globalTableNumber === 5 && playerTableCount[userId] === MAX_TABLES_PER_DAY) {
         return false; // No bloquear en este caso especial
     }
 
@@ -884,9 +884,9 @@ async function resetBoardOnly() {
 
     // Incrementar el número de mesa global de manera ordenada
     globalTableNumber++;
-    if (globalTableNumber > 10) {
+    if (globalTableNumber > 5) {
         globalTableNumber = 1; // Volver a la mesa 1 después de la 10
-        console.log("Ciclo completado de 10 mesas, volviendo a la mesa 1");
+        console.log("Ciclo completado de 5 mesas, volviendo a la mesa 1");
     }
 
     // Crear nuevo tablero sin fichas reveladas
