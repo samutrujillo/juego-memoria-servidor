@@ -53,7 +53,7 @@ const GAME_STATE_BACKUP_2 = path.join(__dirname, 'game-state.backup2.json');
 const ERROR_LOG_FILE = path.join(__dirname, 'error-log.txt');
 
 // Añadir estas nuevas variables para el sistema de mesas
-const MAX_TABLES_PER_DAY = 5;
+const MAX_TABLES_PER_DAY = 10;
 const playerGameState = {}; // Para guardar el estado de juego de cada jugador
 const playerTableCount = {}; // Contar mesas jugadas por cada jugador
 let globalTableNumber = 1; // Mesa global que todos los jugadores verán
@@ -418,7 +418,7 @@ function checkTableLimit(userId) {
     
     // Si es mesa 5 y el jugador ha completado exactamente el máximo, permitir jugar
     // para que pueda completar el ciclo
-    if (globalTableNumber === 5 && playerTableCount[userId] === MAX_TABLES_PER_DAY) {
+    if (globalTableNumber === 10 && playerTableCount[userId] === MAX_TABLES_PER_DAY) {
         return false; // No bloquear en este caso especial
     }
 
@@ -884,9 +884,9 @@ async function resetBoardOnly() {
 
     // Incrementar el número de mesa global de manera ordenada
     globalTableNumber++;
-    if (globalTableNumber > 5) {
+    if (globalTableNumber > 10) {
         globalTableNumber = 1; // Volver a la mesa 1 después de la 10
-        console.log("Ciclo completado de 5 mesas, volviendo a la mesa 1");
+        console.log("Ciclo completado de 10 mesas, volviendo a la mesa 1");
     }
 
     // Crear nuevo tablero sin fichas reveladas
@@ -1881,6 +1881,57 @@ io.on('connection', (socket) => {
             saveGameState();
         }
     });
+
+    // Añade este evento junto a los demás socket.on(...) del servidor
+socket.on('unlockAllTables', async (_, callback) => {
+    console.log("Solicitado desbloqueo de emergencia para todas las mesas");
+    
+    // Reiniciar contadores para todos los jugadores
+    Object.keys(playerTableCount).forEach(userId => {
+      playerTableCount[userId] = 0;
+    });
+  
+    // Actualizar en Firebase si está disponible
+    if (db) {
+      const updates = {};
+      Object.keys(playerTableCount).forEach(userId => {
+        updates[`gameState/userScores/${userId}/tablesPlayed`] = 0;
+      });
+  
+      if (Object.keys(updates).length > 0) {
+        try {
+          await db.ref().update(updates);
+          console.log('Contadores de mesa reiniciados en Firebase');
+        } catch (error) {
+          console.error('Error al reiniciar contadores de mesa en Firebase:', error);
+        }
+      }
+    }
+  
+    // Notificar a todos los clientes
+    io.emit('tablesUnlocked', { message: 'Se han desbloqueado todas las mesas.' });
+    
+    // Enviar actualización de tableros a todos los jugadores
+    for (const player of gameState.players) {
+      if (player.socketId && player.isConnected) {
+        io.to(player.socketId).emit('tablesUpdate', {
+          tablesPlayed: 0,
+          currentTable: globalTableNumber,
+          maxReached: false,
+          lockReason: ''
+        });
+      }
+    }
+    
+    console.log('Todas las mesas desbloqueadas correctamente');
+    
+    // Guardar estado
+    await saveGameState();
+    
+    if (callback) {
+      callback({ success: true, message: 'Todas las mesas desbloqueadas correctamente' });
+    }
+  });
 
     // Seleccionar una ficha - Actualizada para bloqueo por límite de puntos
     socket.on('selectTile', async ({ tileIndex, currentScore }) => {
