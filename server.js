@@ -2523,6 +2523,134 @@ socket.on('unlockAllTables', async (_, callback) => {
         callback({ success: true });
     });
 
+    // Evento para cambiar el nombre de usuario (solo para admins)
+socket.on('changeUsername', async ({ userId, newUsername }, callback) => {
+    const adminId = connectedSockets[socket.id];
+    if (!adminId) {
+        callback({ success: false, message: 'No autorizado' });
+        return;
+    }
+
+    const admin = getUserById(adminId);
+    if (!admin || !admin.isAdmin) {
+        callback({ success: false, message: 'No autorizado' });
+        return;
+    }
+
+    const targetUser = getUserById(userId);
+    if (!targetUser) {
+        callback({ success: false, message: 'Usuario no encontrado' });
+        return;
+    }
+
+    // Verificar que el nuevo nombre no esté en uso
+    const existingUser = users.find(u => u.username.toLowerCase() === newUsername.toLowerCase() && u.id !== userId);
+    if (existingUser) {
+        callback({ success: false, message: 'Este nombre de usuario ya está en uso' });
+        return;
+    }
+
+    // Cambiar el nombre de usuario
+    const oldUsername = targetUser.username;
+    targetUser.username = newUsername;
+
+    // Actualizar en la lista de jugadores activos
+    const playerIndex = gameState.players.findIndex(p => p.id === userId);
+    if (playerIndex !== -1) {
+        gameState.players[playerIndex].username = newUsername;
+    }
+
+    // Actualizar en Firebase si está disponible
+    if (db) {
+        try {
+            await db.ref(`gameState/userScores/${userId}/username`).set(newUsername);
+            if (playerIndex !== -1) {
+                await db.ref(`gameState/players/${playerIndex}/username`).set(newUsername);
+            }
+            console.log(`Nombre de usuario cambiado de ${oldUsername} a ${newUsername}`);
+        } catch (error) {
+            console.error('Error al actualizar nombre de usuario en Firebase:', error);
+        }
+    }
+
+    // Notificar al usuario si está conectado
+    const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
+    if (playerSocketId) {
+        io.to(playerSocketId).emit('usernameChanged', {
+            newUsername: newUsername,
+            message: `Tu nombre de usuario ha sido cambiado a: ${newUsername}`
+        });
+    }
+
+    // Actualizar lista de jugadores para todos
+    io.emit('playersUpdate', users.filter(u => !u.isAdmin).map(u => ({
+        id: u.id,
+        username: u.username,
+        score: u.score,
+        isBlocked: u.isBlocked,
+        isLockedDueToScore: u.isLockedDueToScore
+    })));
+
+    // Guardar estado
+    await saveGameState();
+
+    callback({ success: true, message: `Nombre cambiado de ${oldUsername} a ${newUsername}` });
+});
+
+// Evento para cambiar la contraseña (solo para admins)
+socket.on('changePassword', async ({ userId, newPassword }, callback) => {
+    const adminId = connectedSockets[socket.id];
+    if (!adminId) {
+        callback({ success: false, message: 'No autorizado' });
+        return;
+    }
+
+    const admin = getUserById(adminId);
+    if (!admin || !admin.isAdmin) {
+        callback({ success: false, message: 'No autorizado' });
+        return;
+    }
+
+    const targetUser = getUserById(userId);
+    if (!targetUser) {
+        callback({ success: false, message: 'Usuario no encontrado' });
+        return;
+    }
+
+    // Validar longitud mínima de contraseña
+    if (newPassword.length < 6) {
+        callback({ success: false, message: 'La contraseña debe tener al menos 6 caracteres' });
+        return;
+    }
+
+    // Cambiar la contraseña
+    targetUser.password = newPassword;
+
+    // Actualizar en Firebase si está disponible
+    if (db) {
+        try {
+            await db.ref(`gameState/userScores/${userId}/passwordChanged`).set(true);
+            await db.ref(`gameState/userScores/${userId}/passwordChangedAt`).set(Date.now());
+            console.log(`Contraseña actualizada para ${targetUser.username}`);
+        } catch (error) {
+            console.error('Error al registrar cambio de contraseña en Firebase:', error);
+        }
+    }
+
+    // Notificar al usuario si está conectado
+    const playerSocketId = gameState.players.find(p => p.id === userId)?.socketId;
+    if (playerSocketId) {
+        io.to(playerSocketId).emit('passwordChanged', {
+            message: 'Tu contraseña ha sido actualizada por el administrador. Deberás usar la nueva contraseña en tu próximo inicio de sesión.'
+        });
+    }
+
+    // Guardar estado (aunque las contraseñas no se guardan en el archivo de estado por seguridad)
+    await saveGameState();
+
+    callback({ success: true, message: `Contraseña actualizada para ${targetUser.username}` });
+});
+
     // Reiniciar juego (solo para admins)
     socket.on('resetGame', async (callback) => {
         const adminId = connectedSockets[socket.id];
